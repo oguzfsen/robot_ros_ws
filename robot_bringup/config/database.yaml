@@ -1,0 +1,32 @@
+database_node:
+  ros__parameters:
+    db_path: "~/.ros/robot_brain.db"
+
+    tables_json: |
+      {
+        "encoder_zero_raw": {
+          "columns": [
+            {"name": "id", "type": "INTEGER PRIMARY KEY"},
+            {"name": "motor1", "type": "INTEGER", "default": 0},
+            {"name": "motor2", "type": "INTEGER", "default": 0},
+            {"name": "motor3", "type": "INTEGER", "default": 0},
+            {"name": "motor4", "type": "INTEGER", "default": 0}
+          ]
+        },
+        "mission": {
+          "columns": [
+            {"name": "id", "type": "INTEGER PRIMARY KEY"},
+            {"name": "mission_id", "type": "INTEGER", "default": 0},
+            {"name": "name", "type": "TEXT", "default": ""},
+            {"name": "home_lat", "type": "REAL", "default": 0.0},
+            {"name": "home_lon", "type": "REAL", "default": 0.0},
+            {"name": "receive_date", "type": "TEXT", "default": ""},
+            {"name": "is_completed", "type": "BOOLEAN", "default": false},
+            {"name": "completion_rate", "type": "REAL", "default": 0.0},
+            {"name": "total_distance", "type": "REAL", "default": 0.0},
+            {"name": "raw_json", "type": "TEXT", "default": ""}
+            {"name": "waypoints", "type": "TEXT", "default": ""}
+            {"name": "last_waypoint", "type": "INTEGER", "default": 0},
+          ]
+        }
+      }

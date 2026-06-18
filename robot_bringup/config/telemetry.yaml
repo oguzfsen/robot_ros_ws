@@ -1,0 +1,13 @@
+telemetry_bridge_node:
+  ros__parameters:
+    endpoint_role: robot
+    serial_port: /dev/ttyUSB1
+    baudrate: 57600
+    serial_timeout_s: 0.1
+    reconnect_delay_s: 2.0
+    write_idle_sleep_s: 0.01
+    status_topic: /robot/status
+    rtcm_topic : /station/rtcm
+    mission_topic: /cloud/mission
+    command_topic: /cloud/command
+    diagnostics_period_s: 1.0

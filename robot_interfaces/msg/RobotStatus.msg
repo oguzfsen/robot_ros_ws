@@ -1,0 +1,12 @@
+std_msgs/Header header
+int32 robot_state
+string last_request_id
+int32 last_request_type
+string response
+string latitude
+string longitude
+float32 speed
+float32 heading
+float32 energy
+bool malfunction
+bool emergency

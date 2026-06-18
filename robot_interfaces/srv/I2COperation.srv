@@ -1,0 +1,14 @@
+string device_name
+uint8 bus_id
+bool use_mux
+uint8 mux_address
+uint8 mux_channel
+uint8 device_address
+string operation
+uint8 register_address
+uint32 read_length
+uint8[] payload
+---
+bool success
+string error
+uint8[] data

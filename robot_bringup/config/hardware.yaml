@@ -1,0 +1,114 @@
+relay_node:
+  ros__parameters:
+    device_name: sx1509_gpio
+    device_type: gpio_expander
+    description: SX1509 GPIO expander on the root I2C bus
+    device_address: 62
+    use_mux: false
+    mux_address: 0
+    mux_channel: 0
+
+    ignition_pin: 0
+
+    reverse_pin1: 1
+    reverse_pin2: 2
+    reverse_pin3: 3
+    reverse_pin4: 13
+
+    brake_pin: 12
+    back_energy: 14
+    alarm_lamp: 15
+
+    active_low: true
+
+robot_rc_node:
+  ros__parameters:
+    rc_topic: /rc/input
+    topic_name: /rc/input
+    serial_port: /dev/ttyUSB0
+    serial_baud: 115200
+    serial_timeout: 0.5
+    read_hz: 10.0
+
+encoder_node:
+  ros__parameters:
+    device_name: AS5600
+    device_type: magnetic_encoder
+    description: 4 magnetic encoder on mux1
+    device_address: 54
+    use_mux: true
+    mux_address: 112
+    frequency: 10
+    motor1_sd: 4
+    motor2_sd: 5
+    motor3_sd: 6
+    motor4_sd: 7
+
+steer_node:
+  ros__parameters:
+    device_name: pca9685_pwm
+    bus_id: 1
+    device_address: 64
+    frequency: 50
+    drive_pulse: 3000
+    drive_pulse_1: 3000
+    drive_pulse_2: 3000
+    drive_pulse_3: 3800
+    drive_pulse_4: 3000
+    deadband_deg: 2.0
+    control_frequency: 10.0
+    encoder_timeout_sec: 0.5
+    max_steer_angle_deg: 75.0
+    fake_pid: 10.0 
+
+    front_left_reverse_pin: 4
+    front_left_forward_pin: 5
+
+    front_right_reverse_pin: 0
+    front_right_forward_pin: 1
+
+    rear_left_reverse_pin: 6
+    rear_left_forward_pin: 7
+
+    rear_right_reverse_pin: 2
+    rear_right_forward_pin: 3
+
+compass_node:
+  ros__parameters:
+    device_name: compass
+    device_type: magnetometer
+    description: Main chassis compass on the root I2C bus
+    bus_id: 1
+    device_address: 30
+    use_mux: false
+    frequency: 10
+
+hubmotor_node:
+  ros__parameters:
+    topic: /robot/hub_motor
+    device_name: mcp4725
+    bus_id: 1
+    min_dac_value: 0
+    max_dac_value: 4095
+    control_frequency: 1.0
+    use_mux: true
+    mux_address: 113
+    primary_address: 96
+    secondary_address: 97
+    max_power_percentage: 100
+
+    front_left_mux_channel: 2
+    front_right_mux_channel: 3
+    rear_left_mux_channel: 4
+    rear_right_mux_channel: 5
+
+
+gnss_node:
+  ros__parameters:
+    serial_port: /dev/ttyACM0
+    serial_baud: 9600
+    serial_timeout_sec: 0.2
+    publish_hz: 1.0
+    poll_timeout_sec: 0.6
+    correction_freshness_sec: 3.0
+    frame_id: gnss

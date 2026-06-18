@@ -1,0 +1,36 @@
+routes:
+  - route_id: 10
+    topic_name: /robot/gnssfix
+    station_topic: /station/rtcm
+    robot_topic: /robot/gnssfix
+    ros_type: std_msgs/msg/UInt8MultiArray
+    direction: station_to_robot
+    priority: high
+    queue_depth: 64
+
+  - route_id: 20
+    topic_name: /robot/dummy_command
+    station_topic: /station/dummy_command
+    robot_topic: /robot/dummy_command
+    ros_type: std_msgs/msg/String
+    direction: station_to_robot
+    priority: normal
+    queue_depth: 10
+
+  - route_id: 30
+    topic_name: /station/heartbeat
+    station_topic: /station/heartbeat
+    robot_topic: /robot/heartbeat
+    ros_type: std_msgs/msg/String
+    direction: bidirectional
+    priority: normal
+    queue_depth: 5
+
+  - route_id: 40
+    topic_name: /station/robot_status
+    station_topic: /station/robot_status
+    robot_topic: /robot/status
+    ros_type: diagnostic_msgs/msg/DiagnosticArray
+    direction: robot_to_station
+    priority: normal
+    queue_depth: 10

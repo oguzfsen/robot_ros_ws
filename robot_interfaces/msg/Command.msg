@@ -1,0 +1,9 @@
+std_msgs/Header header
+string request_id
+string command_type
+string mission_id
+bool arm_on
+bool reverse
+bool brake
+int32 throttle
+int32 steer

@@ -1,0 +1,5 @@
+uint8 motor_id
+int32 raw_value
+---
+bool success
+string message

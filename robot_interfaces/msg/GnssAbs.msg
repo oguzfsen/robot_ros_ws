@@ -1,0 +1,10 @@
+std_msgs/Header header
+float64 latitude
+float64 longitude
+float64 altitude_m
+float32 horizontal_accuracy_m
+float32 vertical_accuracy_m
+uint8 satellites
+bool valid
+bool corrected
+bool fixed

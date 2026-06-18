@@ -1,0 +1,600 @@
+#!/usr/bin/env python3
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Int32MultiArray
+
+from robot_interfaces.msg import Steer
+from robot_interfaces.srv import I2COperation, EncoderZeroGet
+from rclpy.parameter import Parameter
+from typing import List
+import time
+
+class SteerNode(Node):
+
+    MODE1 = 0x00
+    MODE2 = 0x01
+    PRESCALE = 0xFE
+
+    LED0_ON_L = 0x06    
+
+    def __init__(self):
+        super().__init__("steer_node", automatically_declare_parameters_from_overrides=True)
+
+        self.device_name = str(self._get_param("device_name", "pca9685_pwm"))
+        self.bus_id = int(self._get_param("bus_id", 1))
+        self.device_address = int(self._get_param("device_address", 0x40))
+        self.pwm_frequency = float(self._get_param("frequency", 50.0))
+        self.control_frequency = float(self._get_param("control_frequency", 10.0))
+        self.deadband_deg = float(self._get_param("deadband_deg", 2.0))
+        self.encoder_timeout_sec = float(self._get_param("encoder_timeout_sec", 0.5))
+        self.max_steer_angle_deg = float(self._get_param("max_steer_angle_deg", 75.0))
+        self.drive_pulse = int(self._get_param("drive_pulse", 500))
+        self.drive_pulse_1 = int(self._get_param("drive_pulse_1", 500))
+        self.drive_pulse_2 = int(self._get_param("drive_pulse_2", 500))
+        self.drive_pulse_3 = int(self._get_param("drive_pulse_3", 500))
+        self.drive_pulse_4 = int(self._get_param("drive_pulse_4", 500))
+        self.fake_pid = int(self._get_param("fake_pid", 20.0))
+
+        self.front_left_forward_pin = int(self._get_param("front_left_forward_pin", 5))
+        self.front_right_forward_pin = int(self._get_param("front_right_forward_pin", 1))
+        self.rear_left_forward_pin = int(self._get_param("rear_left_forward_pin", 7))
+        self.rear_right_forward_pin = int(self._get_param("rear_right_forward_pin", 3))
+        self.front_left_reverse_pin = int(self._get_param("front_left_reverse_pin", 4))
+        self.front_right_reverse_pin = int(self._get_param("front_right_reverse_pin", 0))
+        self.rear_left_reverse_pin = int(self._get_param("rear_left_reverse_pin", 6))
+        self.rear_right_reverse_pin = int(self._get_param("rear_right_reverse_pin", 2))
+
+
+        self.drive_pulses = [
+            self.drive_pulse_1,
+            self.drive_pulse_2,
+            self.drive_pulse_3,
+            self.drive_pulse_4
+        ]
+
+
+        self.motor_state = {
+            1: "",
+            2: "",
+            3: "",
+            4: "",
+        }
+        self.motor_pwm = {
+            1: 0,
+            2: 0,
+            3: 0,
+            4: 0,
+        }
+
+        self.encoder_zero_client = self.create_client(EncoderZeroGet, "/database/encoder_zero_get")
+        self._wait_for_service(self.encoder_zero_client)
+        self.encoder_zero_values = self.read_db()
+        self.get_logger().info(str(self.encoder_zero_values))
+        self.enabled = False
+        self.target_angles = [0, 0, 0, 0]
+        self.encoder_ready = False
+        self.last_encoder_update_sec = 0.0
+        self.waiting_for_encoder_logged = False
+        self.encoder_timeout_logged = False
+
+        self.encoder_values = []
+        self.enc_subs = self.create_subscription(Int32MultiArray, "/robot/steering_encoders", self.encoder_callback, 10)
+        self.steer_subs = self.create_subscription(Steer, "/robot/steer", self.steer_callback, 10)
+
+
+        self.motor_pins = {
+            1: {
+                "reverse": self.front_left_reverse_pin,
+                "forward": self.front_left_forward_pin,
+            },
+            2: {
+                "reverse": self.front_right_reverse_pin,
+                "forward": self.front_right_forward_pin,
+            },
+            3: {
+                "reverse": self.rear_left_reverse_pin,
+                "forward": self.rear_left_forward_pin,
+            },
+            4: {
+                "reverse": self.rear_right_reverse_pin,
+                "forward": self.rear_right_forward_pin,
+            },
+        }
+        self.pwm_channels = [
+            self.front_left_forward_pin,
+            self.front_left_reverse_pin,
+            self.front_right_forward_pin,
+            self.front_right_reverse_pin,
+            self.rear_left_forward_pin,
+            self.rear_left_reverse_pin,
+            self.rear_right_forward_pin,
+            self.rear_right_reverse_pin,
+        ]
+
+        self.desired_channel_payloads = {
+            channel: self.build_pwm_off_payload()
+            for channel in self.pwm_channels
+        }
+        self.applied_channel_payloads = {
+            channel: self.build_pwm_off_payload()
+            for channel in self.pwm_channels
+        }
+        self.pending_i2c_future = None
+        self.active_i2c_channel = None
+        self.active_i2c_payload = None
+
+        self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
+        self._wait_for_service(self.i2c_client)
+        
+        self.init_pca9685(self.pwm_frequency)
+        for motor_id in range(1, 5):
+            self.motor_state[motor_id] = "stop"
+            self.motor_pwm[motor_id] = 0
+
+        self.control_timer = self.create_timer(1.0 / self.control_frequency, self.control_callback)
+
+        self.enc_pub_timer = self.create_timer(1.0, self.enc_pub_callback)
+        self.get_logger().info(
+            f"SteerNode started. control_frequency={self.control_frequency} Hz, "
+            f"pwm_frequency={self.pwm_frequency} Hz"
+        )
+
+    def enc_pub_callback(self) -> None:
+        enc_deggree = [self.to_degree(x) for x in self.encoder_values]
+        enc_zero = [self.to_degree(x) for x in self.encoder_zero_values]
+
+        enc_fark = [a - b for a, b in zip(enc_deggree, enc_zero)]
+        
+        enc_normal = [self.normalize_angle(x) for x in enc_fark]
+        # self.get_logger().info(str(enc_normal))
+    
+    def encoder_callback(self, encoder_values:Int32MultiArray) -> None:
+        if len(encoder_values.data) < 4:
+            self.get_logger().warn("Encoder message has fewer than 4 values")
+            return
+
+        self.encoder_values = list(encoder_values.data[:4])
+        self.encoder_ready = True
+        self.last_encoder_update_sec = time.monotonic()
+        self.waiting_for_encoder_logged = False
+        self.encoder_timeout_logged = False
+
+
+#region Steering
+    def steer_callback(self, msg:Steer) -> None:
+        self.enabled = bool(msg.enable)
+        
+        self.target_angles = [
+            msg.front_left_angle,
+            msg.front_right_angle,
+            msg.rear_left_angle,
+            msg.rear_right_angle
+        ]
+        
+        # (-100,+100) aralığından (-75,+75) aralığına map'lanıyor.
+        self.target_angles = [self.map_range(x, -100, 100, -self.max_steer_angle_deg, self.max_steer_angle_deg) for x in self.target_angles]
+
+        if not self.enabled:
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+
+
+    def control_callback(self) -> None:
+        self.start_next_i2c_write()
+
+        if not self.enabled:
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+            return
+
+        if not self.encoder_ready:
+            if not self.waiting_for_encoder_logged:
+                self.get_logger().warn("Waiting for steering encoder data...")
+                self.waiting_for_encoder_logged = True
+            return
+
+        if (time.monotonic() - self.last_encoder_update_sec) > self.encoder_timeout_sec:
+            if not self.encoder_timeout_logged:
+                self.get_logger().warn("Steering encoder data timed out")
+                self.encoder_timeout_logged = True
+            self.encoder_ready = False
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+            return
+
+        try:
+            self.steer_to_angle(1, self.target_angles[0])
+            self.steer_to_angle(2, self.target_angles[1])
+            self.steer_to_angle(3, self.target_angles[2])
+            self.steer_to_angle(4, self.target_angles[3])
+            self.start_next_i2c_write()
+        except Exception as ex:
+            self.get_logger().error(f"Steering control error: {ex}")
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+
+
+    def steer_to_angle(self, motor_id: int, target_deg: int) -> None:
+        if not (-90 <= target_deg <= 90):
+            self.get_logger().warn(
+                f"Motor {motor_id}: target {target_deg}° out of safe range [-90, 90], skipping"
+            )
+            return
+
+        raw_enc = self.encoder_values[motor_id - 1]
+        raw_zero = self.encoder_zero_values[motor_id - 1]
+
+        enc_angle = self.to_degree(raw_enc)
+        zero_angle = self.to_degree(raw_zero)
+
+        current_deg = self.normalize_angle(enc_angle - zero_angle)
+        error_deg = self.normalize_angle(target_deg - current_deg)
+
+        if error_deg < -self.deadband_deg:
+            self.turn_left(motor_id, error_deg)
+        elif error_deg > self.deadband_deg:
+            self.turn_right(motor_id, error_deg)
+        else:
+            self.stop_motor(motor_id)
+
+
+    def to_degree(self, raw_value: int) -> int:
+        return int(round(raw_value * 360.0 / 4095.0))
+    
+
+    def normalize_angle(self, angle_deg: int) -> int:
+        return (angle_deg + 180) % 360 - 180
+    
+    def turn_left(self, motor_id: int, error_deg: int) -> None:
+        drive_pulse = self.drive_pulses[motor_id - 1]
+        if abs(error_deg) < self.fake_pid:
+            drive_pulse = int(drive_pulse/2.0)
+
+        if (
+            self.motor_state[motor_id] == "left" and
+            self.motor_pwm[motor_id] == drive_pulse
+        ):
+            return
+
+        pins = self.motor_pins[motor_id]
+
+        self.set_pwm_off(pins["forward"])
+        self.set_pwm(pins["reverse"], drive_pulse)
+
+        self.motor_state[motor_id] = "left"
+        self.motor_pwm[motor_id] = drive_pulse
+
+
+    def turn_right(self, motor_id: int, error_deg: int) -> None:
+        drive_pulse = self.drive_pulses[motor_id - 1]
+        if abs(error_deg) < self.fake_pid:
+            drive_pulse = int(drive_pulse/2.0)
+
+        if (
+            self.motor_state[motor_id] == "right" and
+            self.motor_pwm[motor_id] == drive_pulse
+        ):
+            return
+
+        pins = self.motor_pins[motor_id]
+
+        self.set_pwm_off(pins["reverse"])
+        self.set_pwm(pins["forward"], drive_pulse)
+
+        self.motor_state[motor_id] = "right"
+        self.motor_pwm[motor_id] = drive_pulse
+
+
+    def stop_all_motors(self) -> None:
+        for i in range(1,5):
+            self.stop_motor(i)
+        
+
+    def stop_motor(self, motor_id: int) -> None:
+        if self.motor_state[motor_id] == "stop":
+            return
+
+        pins = self.motor_pins[motor_id]
+
+        self.set_pwm_off(pins["forward"])
+        self.set_pwm_off(pins["reverse"])
+
+        self.motor_state[motor_id] = "stop"
+        self.motor_pwm[motor_id] = 0
+
+#endregion
+
+#region I2C Communication
+
+    def channel_register(self, channel: int) -> int:
+        return self.LED0_ON_L + 4 * channel
+
+    def init_pca9685(self, pwm_freq: float = 500.0) -> None:
+        prescale = round(25_000_000 / (4096 * pwm_freq)) - 1
+        prescale = max(3, min(255, prescale))
+
+        self.get_logger().info(f"PCA9685 init, freq={pwm_freq} Hz, prescale={prescale}")
+
+        # MODE1: sleep mode
+        self.i2c_write_sync(self.MODE1, [0x10])
+        time.sleep(0.005)
+
+        # PWM frekansı
+        self.i2c_write_sync(self.PRESCALE, [prescale])
+
+        # MODE2: totem pole output / OUTDRV
+        self.i2c_write_sync(self.MODE2, [0x04])
+
+        # MODE1: auto-increment aktif
+        self.i2c_write_sync(self.MODE1, [0x20])
+        time.sleep(0.005)
+
+        # RESTART + AUTO_INCREMENT
+        self.i2c_write_sync(self.MODE1, [0xA0])
+        time.sleep(0.005)
+
+        self.stop_all_motors_sync()
+
+        self.get_logger().info("PCA9685 configured successfully.")
+    
+    def build_i2c_write_request(self, register_address: int, payload: list[int]) -> I2COperation.Request:
+        req = I2COperation.Request()
+        req.device_name = self.device_name
+        req.bus_id = self.bus_id
+        req.use_mux = False
+        req.mux_address = 0
+        req.mux_channel = 0
+        req.device_address = self.device_address
+        req.operation = "steer"
+        req.register_address = register_address
+        req.read_length = 0
+        req.payload = payload
+        return req
+
+    def validate_i2c_response(self, future) -> None:
+        response = future.result()
+
+        if response is None:
+            raise RuntimeError("I2C service returned no response")
+
+        if not response.success:
+            raise RuntimeError(response.error)
+
+    def i2c_write_sync(self, register_address: int, payload: list[int]) -> bool:
+        req = self.build_i2c_write_request(register_address, payload)
+
+        future = self.i2c_client.call_async(req)
+        
+        rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+
+        if not future.done():
+            raise TimeoutError("i2c request time error")
+
+        self.validate_i2c_response(future)
+        
+        return True
+
+    def i2c_write_async(self, register_address: int, payload: list[int]):
+        req = self.build_i2c_write_request(register_address, payload)
+        return self.i2c_client.call_async(req)
+
+    def start_next_i2c_write(self) -> None:
+        if self.pending_i2c_future is not None or self.active_i2c_channel is not None:
+            return
+
+        if not self.i2c_client.service_is_ready():
+            return
+
+        for channel in self.pwm_channels:
+            desired_payload = self.desired_channel_payloads[channel]
+            applied_payload = self.applied_channel_payloads[channel]
+
+            if desired_payload == applied_payload:
+                continue
+
+            self.active_i2c_channel = channel
+            self.active_i2c_payload = list(desired_payload)
+
+            self.pending_i2c_future = self.i2c_write_async(
+                self.channel_register(channel),
+                self.active_i2c_payload
+            )
+            self.pending_i2c_future.add_done_callback(self.handle_i2c_write_response)
+            return
+
+    def handle_i2c_write_response(self, future) -> None:
+        channel = self.active_i2c_channel
+        payload = self.active_i2c_payload
+
+        self.pending_i2c_future = None
+        self.active_i2c_channel = None
+        self.active_i2c_payload = None
+
+        try:
+            self.validate_i2c_response(future)
+
+            if channel is not None and payload is not None:
+                self.applied_channel_payloads[channel] = list(payload)
+
+            self.start_next_i2c_write()
+
+        except Exception as ex:
+            self.get_logger().error(f"Steering I2C write failed: {ex}")
+
+    def set_pwm(self, channel: int, pulse: int) -> None:
+        pulse = max(0, min(4095, pulse))
+        self.desired_channel_payloads[channel] = self.build_pwm_payload(pulse)
+        self.start_next_i2c_write()
+    
+    def set_pwm_off(self, channel: int) -> None:
+        self.desired_channel_payloads[channel] = self.build_pwm_off_payload()
+        self.start_next_i2c_write()
+
+    def set_pwm_sync(self, channel: int, pulse: int) -> None:
+        pulse = max(0, min(4095, pulse))
+        self.i2c_write_sync(self.channel_register(channel), self.build_pwm_payload(pulse))
+
+    def set_pwm_off_sync(self, channel: int) -> None:
+        self.i2c_write_sync(self.channel_register(channel), self.build_pwm_off_payload())
+
+    def build_pwm_payload(self, pulse: int) -> list[int]:
+        return [
+            0x00,
+            0x00,
+            pulse & 0xFF,
+            (pulse >> 8) & 0x0F
+        ]
+
+    def build_pwm_off_payload(self) -> list[int]:
+        return [
+            0x00,
+            0x00,
+            0x00,
+            0x10
+        ]
+
+    def stop_all_motors_sync(self) -> None:
+        for motor_id in range(1, 5):
+            pins = self.motor_pins[motor_id]
+            self.set_pwm_off_sync(pins["forward"])
+            self.set_pwm_off_sync(pins["reverse"])
+
+#endregion
+
+#region Database
+    def read_db(self) -> List[int]:
+        """
+        Load encoder zero raw values from the database service.
+
+        Raises:
+            RuntimeError: If the zero values cannot be read.
+        """
+        request = EncoderZeroGet.Request()
+        future = self.encoder_zero_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+
+        if not future.done():
+            raise RuntimeError("Encoder zero service timeout")
+
+        response = future.result()
+        if response is None:
+            raise RuntimeError("Encoder zero service returned no response")
+        if not response.success:
+            raise RuntimeError(f"Encoder zero service failed: {response.message}")
+        if len(response.zero_raw) < 4:
+            raise RuntimeError("Encoder zero service returned fewer than 4 values")
+
+        zero_values = [
+            int(response.zero_raw[0]),
+            int(response.zero_raw[1]),
+            int(response.zero_raw[2]),
+            int(response.zero_raw[3]),
+        ]
+        
+        self.get_logger().info(
+            "Encoder zero raw loaded: "
+            f"m1={zero_values[0]}, "
+            f"m2={zero_values[1]}, "
+            f"m3={zero_values[2]}, "
+            f"m4={zero_values[3]}"
+        )
+        
+        return zero_values
+#endregion
+
+#region Helper Functions
+    def _get_param(self, name: str, default_value=None):
+        """
+        Generic ROS2 parameter reader.
+
+        - If parameter exists -> returns plain Python value
+        - If not exists -> declares with default and returns value
+        - If a Parameter object is encountered -> unwraps it
+        - Works for int, float, bool, str, list, etc.
+        """
+
+        try:
+            if self.has_parameter(name):
+                param = self.get_parameter(name)
+            else:
+                param = self.declare_parameter(name, default_value)
+        except Exception:
+            # fallback path
+            param = self.get_parameter(name)
+
+        # If already plain python type
+        if not isinstance(param, Parameter):
+            return param
+
+        # Standard ROS2 Parameter object
+        try:
+            return param.value
+        except Exception:
+            pass
+
+        # Deep fallback for Humble edge cases
+        try:
+            pv = param.get_parameter_value()
+
+            if pv.integer_value != 0 or isinstance(default_value, int):
+                return pv.integer_value
+            if pv.double_value != 0.0 or isinstance(default_value, float):
+                return pv.double_value
+            if pv.bool_value in (True, False):
+                return pv.bool_value
+            if pv.string_value != "":
+                return pv.string_value
+            if pv.integer_array_value:
+                return list(pv.integer_array_value)
+            if pv.double_array_value:
+                return list(pv.double_array_value)
+            if pv.bool_array_value:
+                return list(pv.bool_array_value)
+            if pv.string_array_value:
+                return list(pv.string_array_value)
+
+        except Exception:
+            pass
+
+        return default_value
+    
+    def _wait_for_service(self, client) -> None:
+        while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info(
+                "Waiting for I2C manager service..."
+            )
+    
+    def map_range(self, value: int,
+                in_min: int, in_max: int,
+                out_min: int, out_max: int) -> int:
+        if in_max == in_min:
+            raise ValueError("Giriş aralığı sıfır olamaz")
+
+        return int((value - in_min) * (out_max - out_min) /
+                (in_max - in_min) + out_min)
+#endregion
+
+def main(args=None):
+    """
+    Start the steer node.
+    """
+    rclpy.init(args=args)
+
+    node = SteerNode()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            node.stop_all_motors_sync()
+        except Exception as ex:
+            node.get_logger().error(f"Failed to stop motors on shutdown: {ex}")
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
