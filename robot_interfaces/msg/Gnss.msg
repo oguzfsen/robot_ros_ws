@@ -1,0 +1,15 @@
+std_msgs/Header header
+float64 latitude
+float64 longitude
+float64 altitude
+float32 accuracy_m
+float32 vertical_accuracy_m
+uint8 satellite_count
+string fix_type
+float32 ground_speed_m_s
+float32 heading_deg
+float32 speed_accuracy_m_s
+float32 heading_accuracy_deg
+float32 pdop
+bool fix_ok
+bool differential_solution

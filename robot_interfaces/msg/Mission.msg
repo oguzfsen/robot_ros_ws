@@ -1,3 +1,5 @@
 std_msgs/Header header
+string robot_id
 string request_id
-string json_text
+string payload
+string source

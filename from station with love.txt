@@ -1,0 +1,9 @@
+Robot telemetry_node icin kisa not:
+
+- Istasyon tarafi /user/command ve /user/mission topic'lerinden gelen std_msgs/UInt8MultiArray verisini serial'e ham byte olarak aynen yazar; icerigi degistirmez.
+- Istasyon tarafi /station/rtcm topic'inden gelen std_msgs/UInt8MultiArray verisini de serial'e ham byte olarak aynen yazar.
+- Robot tarafi serial'den command ve mission payload'larini aynen alip ilgili ROS topic'lerine basmali; parse gerekiyorsa ust katmanda yapilmali.
+- Robot tarafi serial'de JSON payload'lar ile RTCM binary frame'lerini birlikte ayirabilmeli; RTCM preamble byte'i 0xD3'tur.
+- Robot status verisi ters yonde gitmelidir: ROS topic'inden al, UTF-8 JSON metni olarak serial'e gecikmesiz ve degistirmeden yaz.
+- JSON tarafinda ek alan, wrapper, checksum veya custom frame ekleme; RTCM tarafinda da binary frame'i oldugu gibi tasimak en guvenli varsayimdir.
+- Ozet: serial'e yazilan tum ROS payload tipleri tek tip dusunulebilir; hepsi byte dizisi olarak ele alinmali.

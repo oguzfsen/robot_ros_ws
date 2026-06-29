@@ -1,0 +1,341 @@
+Bulut Tarafi Icin Istasyon Uyumluluk Talimatlari
+================================================
+
+Bu belge, station_ws icindeki cloud_node.py ve signalr_client.py ile tam uyumlu bir bulut SignalR yapisi kurmak icindir.
+
+
+1. Genel Mimari
+---------------
+
+Sistemde 3 katman var:
+
+1. Bulut
+2. Istasyon
+3. Robot
+
+Bu asamada istasyonun gorevi "is mantigi yapmak" degil, köprü olmaktir.
+Yani:
+
+- Buluttan gelen "/user/command" mesajini ROS topic'ine basar.
+- Buluttan gelen "/user/mission" mesajini ROS topic'ine basar.
+- ROS tarafindan gelen "/robot/status" mesajini buluta yollar.
+
+Istasyon, command veya mission icerigini acip yorumlamaz.
+Bu nedenle bulut tarafi payload'i kendi ihtiyacina gore tasarlayabilir.
+Ancak topic isimleri, method isimleri ve veri tipi aynen uyumlu olmalidir.
+
+(Oğuz ŞEN'in ek notu: Evet command ve mission düzenlenebilir. Ancak diğer uçtaki robot ros'uyla da uyumlu olmalı. robot ros'ta kullanılan msg tiplerini bu dosyanın altına ekleyeceğim.)
+
+2. Zorunlu SignalR Sozlesmesi
+-----------------------------
+
+Hub endpoint:
+
+- /robotHub
+
+Istasyonun baglandigi SignalR method adlari:
+
+- SendMessage
+- ReceiveMessage
+
+Beklenen akış:
+
+- Istasyon -> Bulut:
+  SendMessage(topic, json)
+
+- Bulut -> Istasyon:
+  ReceiveMessage(topic, json)
+
+Buradaki "json" parametresi gercekte JSON string'dir.
+Yani ikinci parametre bir object degil, string olarak tasinmalidir.
+
+Ornek:
+
+topic = "/user/command"
+json = "{\"robot_id\":\"r1\",\"command_type\":\"start_mission\"}"
+
+Hub tarafinda method imzasi su mantikta olmalidir:
+
+public Task SendMessage(string? topic, string? json)
+
+ve istemcilere yayin da su mantikta olmalidir:
+
+Clients.All.SendAsync("ReceiveMessage", topic, json)
+
+Not:
+- "ReceiveMessage" event adini degistirmeyin.
+- "SendMessage" hub method adini degistirmeyin.
+- Parametre sirasini degistirmeyin.
+
+
+3. Topic Isimleri Sabittir
+--------------------------
+
+Istasyon tarafi artik alias kullanmiyor.
+Topic adlari birebir ayni olmalidir.
+
+Tam ve kesin topic listesi:
+
+- "/user/command"
+- "/user/mission"
+- "/robot/status"
+
+Sunucu tarafinda asagidaki gibi farkli varyasyonlar kullanilmamali:
+
+- "user/command"
+- "user/mission"
+- "robot/status"
+
+Yani basinda slash olacak.
+
+En kritik uyari:
+
+Bulut projesinde topic adlari bir yerde slash'li, baska yerde slash'siz olursa
+istasyon mesaji almaz ya da gonderse bile bulut kendi ic isleyisinde yanlis
+route edebilir.
+
+
+4. Payload Formati
+------------------
+
+Istasyon ile bulut arasinda veri "byte array gibi davranan ham icerik" mantiginda tasiniyor.
+Ama SignalR tarafinda ayri bir ozel frame protokolu istenmiyor.
+
+Kurallar:
+
+- Payload UTF-8 olarak encode edilebilir olmali.
+- Payload, SignalR uzerinden string olarak gitmeli.
+- Bu string tipik olarak JSON string olacak.
+- Istasyon command ve mission payload'ini acip parse etmez.
+- Istasyon status payload'ini da sadece string olarak buluta gonderir.
+
+Yani istasyonun bildigi sey sadece sudur:
+
+- topic adi
+- utf-8 string payload
+
+Bu nedenle bulut tarafinda payload yapisi degisebilir ama topic ve string tasima mantigi sabit kalmalidir.
+
+
+5. Istasyonun Bekledigi Yonler
+------------------------------
+
+Buluttan istasyona gelenler:
+
+1. "/user/command"
+2. "/user/mission"
+
+Istasyondan buluta giden:
+
+1. "/robot/status"
+
+Yani bulut kodu su iki yonu net ayirmalidir:
+
+- Command + mission: buluttan istasyona
+- Status: istasyondan buluta
+
+
+6. ROS Tarafinda Karsiliklar
+----------------------------
+
+Istasyon icinde kullanilan ROS topic adlari su anda ayni sekildedir:
+
+- /user/command
+- /user/mission
+- /robot/status
+
+Mesaj tipi:
+
+- std_msgs/UInt8MultiArray
+
+Anlami:
+
+- ROS icinde payload byte listesi olarak tasiniyor.
+- Ama SignalR tarafinda bu icerik UTF-8 string olarak gidiyor.
+
+Dolayisiyla bulut tarafinin ROS tipini bilmesine gerek yok.
+Ama sunu bilmesi gerekir:
+
+- Istasyonun buluta gonderdigi status ikinci parametrede string olarak gelir.
+- Istasyona giden command ve mission da ikinci parametrede string olarak verilmelidir.
+
+
+7. Command Ve Mission Icerigi Hakkinda
+--------------------------------------
+
+Istasyon command veya mission payload'ini incelemez.
+Bu iyi bir sey; cunku bulut ve robot payload semasini daha rahat gelistirebilir.
+
+Ama yine de asagidaki alanlarin bulunmasi mantiklidir:
+
+Command tarafinda beklenebilecek tipik alanlar:
+
+- robot_id
+- request_id
+- command_type
+- payload
+- source
+
+Mission tarafinda beklenebilecek tipik alanlar:
+
+- robot_id
+- request_id
+- payload
+- source
+
+Bu alanlar istasyon icin zorunlu degildir.
+Robot ve bulut arasindaki uygulama mantigi icin faydalidir.
+
+
+8. Status Icerigi Hakkinda
+--------------------------
+
+Istasyon "/robot/status" payload'ini sadece iletir.
+Bu nedenle bulut status semasini net belirlemelidir. (Oğuz ŞEN: robot_status ya da "/robot/status" zaten robot ros'unda mevcut. Bu dosyanın altına ekleyeceğim.)
+
+Onemli olan:
+
+- Bulutun DB'ye yazdigi alanlar
+- UI'in okudugu alanlar
+- Robotun gercekten gonderecegi alanlar
+
+Bu uc yer tamamen ayni isimleri kullanmalidir.
+
+Yani su tarz karisikliklar olmamali:
+
+- robot_state vs mode
+- mission_id vs taskID
+- energy vs energy_level
+- tank vs tank_level
+
+Bu alan isimleri bulut icinde tek standarda indirilmeli.
+
+Istasyon bu farklari duzeltmez.
+Sadece gelen status string'ini oldugu gibi iletir.
+
+
+9. Bulut Tarafinda Yapilmamasi Gerekenler
+-----------------------------------------
+
+Asagidaki seyler istasyonla uyumu bozar:
+
+- Topic adlarini slash'siz kullanmak
+- "ReceiveMessage" yerine baska event adi kullanmak
+- "SendMessage" yerine baska hub method adi kullanmak
+- topic ve json parametre sirasini degistirmek
+- JSON object gonderip istemcinin object bekledigini varsaymak
+- UTF-8 disi bir veri gondermek
+
+
+10. Onerilen Minimum Testler
+----------------------------
+
+Bulut projesi duzenlendikten sonra asagidaki testler yapilabilir:
+
+1. Istasyon baglaniyor mu?
+   Hub uzerinde baglanti hatasi olmamali.
+
+2. Buluttan "/user/command" gonderilince istasyon bunu alip ROS topic'ine basiyor mu?
+
+3. Buluttan "/user/mission" gonderilince istasyon bunu alip ROS topic'ine basiyor mu?
+
+4. Istasyon tarafinda "/robot/status" yayini olunca bulut bunu SignalR uzerinden aliyor mu?
+
+5. UI, DB ve backend ayni status alan adlarini mi kullaniyor?
+
+
+11. En Ozet Hal
+---------------
+
+Bulut tarafinin mutlaka bilmesi gereken en kritik 5 madde:
+
+1. Hub endpoint: /robotHub
+2. Hub method: SendMessage(string topic, string json)
+3. Client event: ReceiveMessage(topic, json)
+4. Topic'ler kesin olarak:
+   "/user/command", "/user/mission", "/robot/status"
+5. Ikinci parametre string olmali ve UTF-8 JSON tasiyabilmeli
+
+
+12. Bu Belgenin Amaci
+---------------------
+
+Bu belge, bulut projesindeki Codex'e verilirse su sonucu hedefler:
+
+- Istasyonla haberlesen hub sozlesmesini bozmasin
+- Topic adlarini tek standarda sabitlesin
+- Status modelindeki alan adlarini backend + DB + UI tarafinda uyumlu hale getirsin
+- Istasyonu payload parser gibi kullanmaya kalkmasin
+
+(Oğuz ŞEN: Aşağıdaki satırlarda robot ros'un kullandığı yapıları yazıyorum: bulutun gönderdiği ve aldığı mesajlarda buna uygun olmalı.)
+
+home/repos/robot_ros_ws/robot_interfaces/msg/ içindeki .msg dosyaları:
+
+Command.msg =>
+std_msgs/Header header
+string robot_id
+string request_id
+string command_type
+string payload
+string source
+
+Mission.msg =>
+std_msgs/Header header
+string robot_id
+string request_id
+string payload
+string source
+
+Status.msg => 
+std_msgs/Header header
+string robot_id
+int32 robot_state
+float64 latitude
+float64 longitude
+float64 altitude
+float32 speed
+float32 heading
+string gnss_fix_type
+float32 accuracy
+int32 energy
+int32 tank
+bool malfunction
+bool emergency
+int32 mission_id
+int32 completion_rate
+string responses
+
+Ayrıca:
+command_type şu değerleri alabilir:
+emergency
+start_mission
+pause_mission
+stop_mission
+return_home
+start_spraying
+stop_spraying
+spraying_demo
+
+robot_state haberleşmede bir integer olarak iletilir. robot ros içinde şu yapı kullanılır:
+class RobotState(IntEnum):
+    IDLE = 1
+    MANUAL = 2
+    MISSION = 3
+    EMERGENCY = 4
+    MALFUNTION = 5
+
+Buna ek olarak bulut tarafında OFFLINE = 0 eklenebilir. Böylece user robotun bağlanmadığını görmüş olur.
+
+Status.msg içindeki responses değişkeni bir json stringidir. 
+user tarafından gönderilen command ve mission gibi mesajlardaki request_id'ler robota ulaşınca
+bunların ulaştığını ve kabul edilip edilmediğini gösteren bir dictionary formatında yazılacaktır (henüz yazılmadı).
+Örneğin robot otonom görevde ama user bir start_spraying command'ı gönderdi. Bu durumda responses şuna benzer:
+{["request_id":"AAAAAAAA", "success": false, "error_text": "robot otonom modda olduğundan uygulanamadı", "response_text":"" ], [...], ...}
+Örneğin robota şu ID'li mission'a başla diye komut gitti. responses şöyle olabilir:
+{["request_id":"BBBBBBBB", "success": true, "error_text": "", "response_text":"mission_id=88 başlatıldı" ], [...], ...}
+Veya bir "/user/mission" gönderildiğinde robot ros bunun içindeki payload'ı açar ve bilgileri kendi DB'sine kaydeder. ve responses içinde bunu bildirir.
+Not: Bu arada uI'da görev değiştirilirse, yani yollar, rota vb. değişirse, proje ID'si de değişmelidir.
+Böylece robot görevin eski versiyonunu uygulamaya kalkmaz. version_id kullanmak yerine bu yöntem daha temiz bence. 
+Robota şu ID'li görevi başlat denilince robot DB'deki görev eski ID ise bu görev bende yok gibi bir cevap döner.
+
+Bunlar robot ros tarafındaki kalıplardır. Bulut tarafı buna uymalıdır.
