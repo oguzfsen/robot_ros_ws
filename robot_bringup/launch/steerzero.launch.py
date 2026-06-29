@@ -4,20 +4,13 @@ from ament_index_python.packages import get_package_share_directory
 import os
 
 def generate_launch_description():
-    """
-    Launch steering zero calibration tools.
 
-    Starts:
-        - rc_node
-        - database_node
-        - steer_zero_node
-    """
     ld = LaunchDescription()
 
-    config_hardware = os.path.join(
+    params = os.path.join(
         get_package_share_directory("robot_bringup"),
         "config",
-        "hardware.yaml",
+        "params.yaml",
     )
 
     config_database = os.path.join(
@@ -29,7 +22,7 @@ def generate_launch_description():
     rc_node = Node(
             package="robot_core",
             executable="rc_node",
-            parameters=[config_hardware]
+            parameters=[params]
     )
 
     database_node = Node(
@@ -47,13 +40,13 @@ def generate_launch_description():
     encoder_node =  Node(
         package="robot_core",
         executable="encoder_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
 
     i2c_srv_node = Node(
         package="robot_core",
         executable="i2c_srv_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
     
 

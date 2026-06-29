@@ -14,7 +14,7 @@ from rclpy.node import Node
 
 from robot_interfaces.msg import RobotRelay
 from robot_interfaces.srv import I2COperation
-from rclpy.parameter import Parameter
+from Tools import _get_param
 
 
 class RelayNode(Node):
@@ -38,28 +38,29 @@ class RelayNode(Node):
         """
         super().__init__("relay_node", automatically_declare_parameters_from_overrides=True)
 
-        self.bus_id = int(self._get_param("bus_id", 1))
-        self.device_name = str(self._get_param("device_name", "sx1509_gpio"))
-        self.device_address = int(self._get_param("device_address", 0x3E))
+        self.bus_id = int(_get_param(self, "bus_id", 1))
+        self.device_name = str(_get_param(self, "device_name", "sx1509_gpio"))
+        self.device_address = int(_get_param(self, "device_address", 0x3E))
 
-        self.use_mux = bool(self._get_param("use_mux", False))
-        self.mux_address = int(self._get_param("mux_address", 0))
-        self.mux_channel = int(self._get_param("mux_channel", 0))
+        self.use_mux = bool(_get_param(self, "use_mux", False))
+        self.mux_address = int(_get_param(self, "mux_address", 0))
+        self.mux_channel = int(_get_param(self, "mux_channel", 0))
 
-        self.active_low = bool(self._get_param("active_low", True))
+        self.active_low = bool(_get_param(self, "active_low", True))
 
-        self.ignition_pin = int(self._get_param("ignition_pin", 0))
+        self.ignition_pin = int(_get_param(self, "ignition_pin", 0))
+        self.topic_name = str(_get_param(self, "topic_name", "/robot/relay"))
 
         self.reverse_pins = [
-            int(self._get_param("reverse_pin1", 1)),
-            int(self._get_param("reverse_pin2", 2)),
-            int(self._get_param("reverse_pin3", 3)),
-            int(self._get_param("reverse_pin4", 4)),
+            int(_get_param(self, "reverse_pin1", 1)),
+            int(_get_param(self, "reverse_pin2", 2)),
+            int(_get_param(self, "reverse_pin3", 3)),
+            int(_get_param(self, "reverse_pin4", 13)),
         ]
 
-        self.brake_pin = int(self._get_param("brake_pin", 5))
-        self.back_energy_pin = int(self._get_param("back_energy", 6))
-        self.alarm_lamp_pin = int(self._get_param("alarm_lamp", 7))
+        self.brake_pin = int(_get_param(self, "brake_pin", 12))
+        self.back_energy_pin = int(_get_param(self, "back_energy", 14))
+        self.alarm_lamp_pin = int(_get_param(self, "alarm_lamp", 15))
 
         self.output_pins = [
             self.ignition_pin,
@@ -96,75 +97,16 @@ class RelayNode(Node):
         self.configure_outputs()
         self.write_all_outputs_safe()
 
-        self.subscription = self.create_subscription(RobotRelay, "/robot/relay", self.relay_callback, 10)
+        self.subscription = self.create_subscription(RobotRelay, self.topic_name, self.relay_callback, 10)
 
         self.get_logger().info("relay_controller_node started")
 
 
-    def _get_param(self, name: str, default_value=None):
-        """
-        Generic ROS2 parameter reader.
-
-        - If parameter exists -> returns plain Python value
-        - If not exists -> declares with default and returns value
-        - If a Parameter object is encountered -> unwraps it
-        - Works for int, float, bool, str, list, etc.
-        """
-
-        try:
-            if self.has_parameter(name):
-                param = self.get_parameter(name)
-            else:
-                param = self.declare_parameter(name, default_value)
-        except Exception:
-            # fallback path
-            param = self.get_parameter(name)
-
-        # If already plain python type
-        if not isinstance(param, Parameter):
-            return param
-
-        # Standard ROS2 Parameter object
-        try:
-            return param.value
-        except Exception:
-            pass
-
-        # Deep fallback for Humble edge cases
-        try:
-            pv = param.get_parameter_value()
-
-            if pv.integer_value != 0 or isinstance(default_value, int):
-                return pv.integer_value
-            if pv.double_value != 0.0 or isinstance(default_value, float):
-                return pv.double_value
-            if pv.bool_value in (True, False):
-                return pv.bool_value
-            if pv.string_value != "":
-                return pv.string_value
-            if pv.integer_array_value:
-                return list(pv.integer_array_value)
-            if pv.double_array_value:
-                return list(pv.double_array_value)
-            if pv.bool_array_value:
-                return list(pv.bool_array_value)
-            if pv.string_array_value:
-                return list(pv.string_array_value)
-
-        except Exception:
-            pass
-
-        return default_value
-
-            
-    
     def _wait_for_service(self, client) -> None:
         while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info(
                 "Waiting for I2C manager service..."
             )
-
-
 
     def relay_callback(self, msg: RobotRelay) -> None:
         """
@@ -448,9 +390,6 @@ class RelayNode(Node):
 
 
 def main(args=None):
-    """
-    Start the relay controller node.
-    """
     rclpy.init(args=args)
 
     node = RelayNode()

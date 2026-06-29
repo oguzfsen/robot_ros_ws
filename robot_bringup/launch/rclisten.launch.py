@@ -7,16 +7,16 @@ def generate_launch_description():
     ld = LaunchDescription()
 
 
-    config_hardware = os.path.join(
+    params = os.path.join(
         get_package_share_directory("robot_bringup"),
         "config",
-        "hardware.yaml",
+        "params.yaml",
     )
 
     rc_node = Node(
         package="robot_core",
         executable="rc_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
 
     rc_listener_node = Node(

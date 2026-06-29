@@ -5,7 +5,7 @@ from robot_interfaces.msg import Compass
 
 class CompassListenerNode(Node):
     def __init__(self):
-        super().__init__("compass_listener_node", automatically_declare_parameters_from_overrides=True)
+        super().__init__("compass_listener_node")
 
         self.subscription = self.create_subscription(Compass, "/robot/compass", self.subs_callback, 10)
         self.create_timer(1, self.timer_callback)
@@ -24,13 +24,8 @@ class CompassListenerNode(Node):
 
 
 def main(args=None):
-    """
-    Start the steering encoder node.
-    """
     rclpy.init(args=args)
-
     node = CompassListenerNode()
-
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

@@ -6,17 +6,10 @@ import os
 def generate_launch_description():
     ld = LaunchDescription()
 
-    # CONFIG PATHS
-    config = os.path.join(
+    params = os.path.join(
         get_package_share_directory("robot_bringup"),
         "config",
         "params.yaml",
-    )
-
-    config_hardware = os.path.join(
-        get_package_share_directory("robot_bringup"),
-        "config",
-        "hardware.yaml",
     )
 
     config_database = os.path.join(
@@ -25,41 +18,29 @@ def generate_launch_description():
         "database.yaml",
     )
 
-    config_telemetry = os.path.join(
-        get_package_share_directory("robot_bringup"),
-        "config",
-        "telemetry.yaml",
-    )
-
-    config_telemetry_routes = os.path.join(
-        get_package_share_directory("robot_bringup"),
-        "config",
-        "telemetry_routes.yaml",
-    )
-
-    #EXECUTIBLE PATHS
+    
     core_node = Node(
         package="robot_core",
         executable="core_node",
-        parameters=[config]
+        parameters=[params]
     )
 
     rc_node = Node(
         package="robot_core",
         executable="rc_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
 
     relay_node = Node(
         package="robot_core",
         executable="relay_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
 
     i2c_srv_node = Node(
         package="robot_core",
         executable="i2c_srv_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
 
     database_node = Node(
@@ -70,41 +51,35 @@ def generate_launch_description():
     encoder_node =  Node(
         package="robot_core",
         executable="encoder_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
     steer_node =  Node(
         package="robot_core",
         executable="steer_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
     compass_node = Node(
         package="robot_core",
         executable="compass_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
 
     hubmotor_node = Node(
         package="robot_core",
         executable="hubmotor_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
 
     gnss_node = Node(
         package="robot_core",
         executable="gnss_node",
-        parameters=[config_hardware]
+        parameters=[params]
     )
 
-    telemetry_bridge_node = Node(
+    telemetry_node = Node(
         package="robot_core",
-        executable="telemetry_bridge_node",
-        parameters=[
-            config_telemetry,
-            {
-                "routes_file": config_telemetry_routes,
-                "endpoint_role": "robot",
-            },
-        ]
+        executable="telemetry_node",
+        parameters=[params]
     )
 
     ld.add_action(i2c_srv_node)
@@ -117,6 +92,6 @@ def generate_launch_description():
     ld.add_action(compass_node)
     ld.add_action(core_node)
     ld.add_action(gnss_node)
-    ld.add_action(telemetry_bridge_node)
+    ld.add_action(telemetry_node)
 
     return ld

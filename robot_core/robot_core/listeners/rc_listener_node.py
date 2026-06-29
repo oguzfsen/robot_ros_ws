@@ -4,7 +4,7 @@ from robot_interfaces.msg import RcInput
 
 class RCListenerNode(Node):
     def __init__(self) -> None:
-        super().__init__("rc_listener_node", automatically_declare_parameters_from_overrides=True)
+        super().__init__("rc_listener_node")
 
         self.raw_line = ""
 

@@ -11,19 +11,18 @@ from robot_interfaces.msg import (
 
 from robot_core.Buzzer import Buzzer
 from robot_core.Led import Led
-from helpers import RobotState
+from Tools import RobotState, _get_param
 
 class CoreNode(Node):
 
     def __init__(self) -> None:
         super().__init__("core_node", automatically_declare_parameters_from_overrides=True,)
 
-        
-        self.throttle_max = float(self._get_param("throttle_deadzone", 80.0))
-        self.throttle_deadzone = float(self._get_param("throttle_deadzone", 5.0))
-        self.update_hz = int(self._get_param("update_hz"), 10)
-        buzzer_gpio_pin = int(self._get_param("buzzer_pin", 18))
-        led_gpio_pin = int(self._get_param("led_pin", 23)),
+        self.throttle_max = float(_get_param(self, "throttle_deadzone", 80.0))
+        self.throttle_deadzone = float(_get_param(self, "throttle_deadzone", 5.0))
+        self.update_hz = int(_get_param(self, "update_hz"), 10)
+        buzzer_gpio_pin = int(_get_param(self, "buzzer_pin", 18))
+        led_gpio_pin = int(_get_param(self, "led_pin", 23)),
 
         self.buzzer = Buzzer(buzzer_gpio_pin)
         self.led = Led(led_gpio_pin)
@@ -78,7 +77,6 @@ class CoreNode(Node):
         self.publish_diag()
 
     def publish_diag(self) -> None:
-        self.robot_diag_msg.
         ...
 
 
@@ -240,63 +238,6 @@ class CoreNode(Node):
 
         return super().destroy_node()
 
-
-#region Helper Functions
-    def _get_param(self, name: str, default_value=None):
-        """
-        Generic ROS2 parameter reader.
-
-        - If parameter exists -> returns plain Python value
-        - If not exists -> declares with default and returns value
-        - If a Parameter object is encountered -> unwraps it
-        - Works for int, float, bool, str, list, etc.
-        """
-
-        try:
-            if self.has_parameter(name):
-                param = self.get_parameter(name)
-            else:
-                param = self.declare_parameter(name, default_value)
-        except Exception:
-            # fallback path
-            param = self.get_parameter(name)
-
-        # If already plain python type
-        if not isinstance(param, Parameter):
-            return param
-
-        # Standard ROS2 Parameter object
-        try:
-            return param.value
-        except Exception:
-            pass
-
-        # Deep fallback for Humble edge cases
-        try:
-            pv = param.get_parameter_value()
-
-            if pv.integer_value != 0 or isinstance(default_value, int):
-                return pv.integer_value
-            if pv.double_value != 0.0 or isinstance(default_value, float):
-                return pv.double_value
-            if pv.bool_value in (True, False):
-                return pv.bool_value
-            if pv.string_value != "":
-                return pv.string_value
-            if pv.integer_array_value:
-                return list(pv.integer_array_value)
-            if pv.double_array_value:
-                return list(pv.double_array_value)
-            if pv.bool_array_value:
-                return list(pv.bool_array_value)
-            if pv.string_array_value:
-                return list(pv.string_array_value)
-
-        except Exception:
-            pass
-
-        return default_value
-#endregion
 
 def main(args=None) -> None:
     rclpy.init(args=args)

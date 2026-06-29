@@ -6,7 +6,7 @@ from std_msgs.msg import Int32MultiArray
 
 from robot_interfaces.msg import Steer
 from robot_interfaces.srv import I2COperation, EncoderZeroGet
-from rclpy.parameter import Parameter
+from Tools import _get_param
 from typing import List
 import time
 
@@ -21,30 +21,31 @@ class SteerNode(Node):
     def __init__(self):
         super().__init__("steer_node", automatically_declare_parameters_from_overrides=True)
 
-        self.device_name = str(self._get_param("device_name", "pca9685_pwm"))
-        self.bus_id = int(self._get_param("bus_id", 1))
-        self.device_address = int(self._get_param("device_address", 0x40))
-        self.pwm_frequency = float(self._get_param("frequency", 50.0))
-        self.control_frequency = float(self._get_param("control_frequency", 10.0))
-        self.deadband_deg = float(self._get_param("deadband_deg", 2.0))
-        self.encoder_timeout_sec = float(self._get_param("encoder_timeout_sec", 0.5))
-        self.max_steer_angle_deg = float(self._get_param("max_steer_angle_deg", 75.0))
-        self.drive_pulse = int(self._get_param("drive_pulse", 500))
-        self.drive_pulse_1 = int(self._get_param("drive_pulse_1", 500))
-        self.drive_pulse_2 = int(self._get_param("drive_pulse_2", 500))
-        self.drive_pulse_3 = int(self._get_param("drive_pulse_3", 500))
-        self.drive_pulse_4 = int(self._get_param("drive_pulse_4", 500))
-        self.fake_pid = int(self._get_param("fake_pid", 20.0))
+        self.device_name = str(_get_param(self, "device_name", "pca9685_pwm"))
+        self.bus_id = int(_get_param(self, "bus_id", 1))
+        self.device_address = int(_get_param(self, "device_address", 0x40))
+        self.pwm_frequency = float(_get_param(self, "frequency", 50.0))
+        self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
+        self.deadband_deg = float(_get_param(self, "deadband_deg", 2.0))
+        self.encoder_timeout_sec = float(_get_param(self, "encoder_timeout_sec", 0.5))
+        self.max_steer_angle_deg = float(_get_param(self, "max_steer_angle_deg", 60.0))
+        self.drive_pulse_1 = int(_get_param(self, "drive_pulse_1", 3000))
+        self.drive_pulse_2 = int(_get_param(self, "drive_pulse_2", 3000))
+        self.drive_pulse_3 = int(_get_param(self, "drive_pulse_3", 3800))
+        self.drive_pulse_4 = int(_get_param(self, "drive_pulse_4", 3000))
+        self.fake_pid = int(_get_param(self, "fake_pid", 10.0))
 
-        self.front_left_forward_pin = int(self._get_param("front_left_forward_pin", 5))
-        self.front_right_forward_pin = int(self._get_param("front_right_forward_pin", 1))
-        self.rear_left_forward_pin = int(self._get_param("rear_left_forward_pin", 7))
-        self.rear_right_forward_pin = int(self._get_param("rear_right_forward_pin", 3))
-        self.front_left_reverse_pin = int(self._get_param("front_left_reverse_pin", 4))
-        self.front_right_reverse_pin = int(self._get_param("front_right_reverse_pin", 0))
-        self.rear_left_reverse_pin = int(self._get_param("rear_left_reverse_pin", 6))
-        self.rear_right_reverse_pin = int(self._get_param("rear_right_reverse_pin", 2))
-
+        self.front_left_forward_pin = int(_get_param("front_left_forward_pin", 5))
+        self.front_right_forward_pin = int(_get_param("front_right_forward_pin", 1))
+        self.rear_left_forward_pin = int(_get_param("rear_left_forward_pin", 7))
+        self.rear_right_forward_pin = int(_get_param("rear_right_forward_pin", 3))
+        self.front_left_reverse_pin = int(_get_param("front_left_reverse_pin", 4))
+        self.front_right_reverse_pin = int(_get_param("front_right_reverse_pin", 0))
+        self.rear_left_reverse_pin = int(_get_param("rear_left_reverse_pin", 6))
+        self.rear_right_reverse_pin = int(_get_param("rear_right_reverse_pin", 2))
+        self.database_listen_client = str(_get_param("database_listen_client", "/database/encoder_zero_get"))
+        self.encoder_listen_topic = str(_get_param("encoder_listen_topic", "/robot/steering_encoders"))
+        self.core_listen_topic = str(_get_param("core_listen_topic", "/robot/steer"))
 
         self.drive_pulses = [
             self.drive_pulse_1,
@@ -53,13 +54,13 @@ class SteerNode(Node):
             self.drive_pulse_4
         ]
 
-
         self.motor_state = {
             1: "",
             2: "",
             3: "",
             4: "",
         }
+
         self.motor_pwm = {
             1: 0,
             2: 0,
@@ -67,7 +68,7 @@ class SteerNode(Node):
             4: 0,
         }
 
-        self.encoder_zero_client = self.create_client(EncoderZeroGet, "/database/encoder_zero_get")
+        self.encoder_zero_client = self.create_client(EncoderZeroGet, self.database_listen_client)
         self._wait_for_service(self.encoder_zero_client)
         self.encoder_zero_values = self.read_db()
         self.get_logger().info(str(self.encoder_zero_values))
@@ -79,8 +80,8 @@ class SteerNode(Node):
         self.encoder_timeout_logged = False
 
         self.encoder_values = []
-        self.enc_subs = self.create_subscription(Int32MultiArray, "/robot/steering_encoders", self.encoder_callback, 10)
-        self.steer_subs = self.create_subscription(Steer, "/robot/steer", self.steer_callback, 10)
+        self.enc_subs = self.create_subscription(Int32MultiArray, self.encoder_listen_topic, self.encoder_callback, 10)
+        self.steer_subs = self.create_subscription(Steer, self.core_listen_topic, self.steer_callback, 10)
 
 
         self.motor_pins = {
@@ -504,60 +505,6 @@ class SteerNode(Node):
 #endregion
 
 #region Helper Functions
-    def _get_param(self, name: str, default_value=None):
-        """
-        Generic ROS2 parameter reader.
-
-        - If parameter exists -> returns plain Python value
-        - If not exists -> declares with default and returns value
-        - If a Parameter object is encountered -> unwraps it
-        - Works for int, float, bool, str, list, etc.
-        """
-
-        try:
-            if self.has_parameter(name):
-                param = self.get_parameter(name)
-            else:
-                param = self.declare_parameter(name, default_value)
-        except Exception:
-            # fallback path
-            param = self.get_parameter(name)
-
-        # If already plain python type
-        if not isinstance(param, Parameter):
-            return param
-
-        # Standard ROS2 Parameter object
-        try:
-            return param.value
-        except Exception:
-            pass
-
-        # Deep fallback for Humble edge cases
-        try:
-            pv = param.get_parameter_value()
-
-            if pv.integer_value != 0 or isinstance(default_value, int):
-                return pv.integer_value
-            if pv.double_value != 0.0 or isinstance(default_value, float):
-                return pv.double_value
-            if pv.bool_value in (True, False):
-                return pv.bool_value
-            if pv.string_value != "":
-                return pv.string_value
-            if pv.integer_array_value:
-                return list(pv.integer_array_value)
-            if pv.double_array_value:
-                return list(pv.double_array_value)
-            if pv.bool_array_value:
-                return list(pv.bool_array_value)
-            if pv.string_array_value:
-                return list(pv.string_array_value)
-
-        except Exception:
-            pass
-
-        return default_value
     
     def _wait_for_service(self, client) -> None:
         while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):

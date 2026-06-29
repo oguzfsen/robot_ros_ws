@@ -4,10 +4,10 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter import Parameter
 from rclpy.serialization import deserialize_message, serialize_message
 from serial import Serial, SerialException
 from robot_interfaces.msg import RobotStatus, IncomingMessage, Rtcm, Command, Mission
+from Tools import _get_param
 
 
 class TelemetryBridgeNode(Node):
@@ -16,16 +16,16 @@ class TelemetryBridgeNode(Node):
     def __init__(self) -> None:
         super().__init__("telemetry_bridge_node", automatically_declare_parameters_from_overrides=True)
 
-        self.serial_port = str(self._get_param("serial_port"))
-        self.baudrate = int(self._get_param("baudrate"))
-        self.serial_timeout = float(self._get_param("serial_timeout"))
-        self.reconnect_delay = float(self._get_param("reconnect_delay_s"))
-        self.write_idle_sleep = float(self._get_param("write_idle_sleep_s"))
-        self.status_hz = float(self._get_param("status_hz"), 1.0)
-        self.topic_status = str(self._get_param("topic_status"))
-        self.topic_rtcm = str(self._get_param("topic_rtcm"))
-        self.topic_command = str(self._get_param("topic_command"))
-        self.topic_mission = str(self._get_param("topic_mission"))
+        self.serial_port = str(_get_param(self, "serial_port", "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"))
+        self.baudrate = int(_get_param(self, "baudrate", 460800))
+        self.serial_timeout = float(_get_param(self, "serial_timeout", 0.1))
+        self.reconnect_delay = float(_get_param(self, "reconnect_delay_s", 2.0))
+        self.write_idle_sleep = float(_get_param(self, "write_idle_sleep_s", 0.01))
+        self.status_hz = float(_get_param(self, "status_hz"), 1.0)
+        self.topic_status = str(_get_param(self, "topic_status", "/robot/status"))
+        self.topic_rtcm = str(_get_param(self, "topic_rtcm", "/station/rtcm"))
+        self.topic_command = str(_get_param(self, "topic_command", "/user/command"))
+        self.topic_mission = str(_get_param(self, "topic_mission", "/user/mission"))
 
         self.serial = Serial(port= self.serial_port, baudrate= self.baudrate, timeout=self.serial_timeout, write_timeout=self.serial_timeout)
         self.connected = True
@@ -86,52 +86,6 @@ class TelemetryBridgeNode(Node):
         mission = ...
         self.save_mission_client.call_async(mission)
     
-
-    def _get_param(self, name: str, default_value=None):
-        try:
-            if self.has_parameter(name):
-                param = self.get_parameter(name)
-            else:
-                param = self.declare_parameter(name, default_value)
-        except Exception:
-            # fallback path
-            param = self.get_parameter(name)
-
-        # If already plain python type
-        if not isinstance(param, Parameter):
-            return param
-
-        # Standard ROS2 Parameter object
-        try:
-            return param.value
-        except Exception:
-            pass
-
-        # Deep fallback for Humble edge cases
-        try:
-            pv = param.get_parameter_value()
-
-            if pv.integer_value != 0 or isinstance(default_value, int):
-                return pv.integer_value
-            if pv.double_value != 0.0 or isinstance(default_value, float):
-                return pv.double_value
-            if pv.bool_value in (True, False):
-                return pv.bool_value
-            if pv.string_value != "":
-                return pv.string_value
-            if pv.integer_array_value:
-                return list(pv.integer_array_value)
-            if pv.double_array_value:
-                return list(pv.double_array_value)
-            if pv.bool_array_value:
-                return list(pv.bool_array_value)
-            if pv.string_array_value:
-                return list(pv.string_array_value)
-
-        except Exception:
-            pass
-
-        return default_value
 
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)

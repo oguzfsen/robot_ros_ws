@@ -13,10 +13,10 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter import Parameter
 
 from robot_interfaces.msg import HubMotor
 from robot_interfaces.srv import I2COperation
+from Tools import _get_param
 
 
 class HubMotorNode(Node):
@@ -29,33 +29,21 @@ class HubMotorNode(Node):
         """Initialize parameters, I2C client, address detection, and timers."""
         super().__init__("hubmotor_node", automatically_declare_parameters_from_overrides=True)
 
-        self.topic_name = str(self._get_param("topic", "/robot/hub_motor"))
-        self.device_name = str(
-            self._get_param("device_name", self._get_param("device_type", "mcp4725"))
-        )
-        self.bus_id = int(self._get_param("bus_id", 1))
-
-        self.use_mux = bool(self._get_param("use_mux", True))
-        self.mux_address = int(self._get_param("mux_address", 0x71))
-
-        self.primary_address = int(
-            self._get_param("primary_address", self._get_param("devices_address", 0x60))
-        )
-        self.secondary_address = int(
-            self._get_param("secondary_address", self._get_param("devices_address_secondary", 0x61))
-        )
-
-        self.min_dac_value = int(self._get_param("min_dac_value", 0))
-        self.max_dac_value = int(self._get_param("max_dac_value", 4095))
-        self.max_power_percentage = int(self._get_param("max_power_percentage", 50))
-        self.control_frequency = float(self._get_param("control_frequency", 1.0))
+        self.topic_name = str(_get_param(self, "topic", "/robot/hub_motor"))
+        self.device_name = str(_get_param("device_name", "mcp4725"))
+        self.bus_id = int(_get_param(self, "bus_id", 1))
+        self.use_mux = bool(_get_param(self, "use_mux", True))
+        self.mux_address = int(_get_param(self, "mux_address", 113))
+        self.primary_address = int(_get_param(self, "primary_address" 96))
+        self.secondary_address = int(_get_param(self, "secondary_address", 97 ))
+        self.min_dac_value = int(_get_param(self, "min_dac_value", 0))
+        self.max_dac_value = int(_get_param(self, "max_dac_value", 4095))
+        self.max_power_percentage = int(_get_param(self, "max_power_percentage", 100))
+        self.control_frequency = float(_get_param(self, "control_frequency", 1.0))
 
         self.min_dac_value = self.clamp(0, 4095, self.min_dac_value)
         self.max_dac_value = self.clamp(self.min_dac_value, 4095, self.max_dac_value)
         self.max_power_percentage = self.clamp(0, 100, self.max_power_percentage)
-
-        if self.control_frequency <= 0.0:
-            self.control_frequency = 1.0
 
         self.motor_order = [
             "front_left",
@@ -66,19 +54,19 @@ class HubMotorNode(Node):
 
         self.motors = {
             "front_left": {
-                "mux_channel": int(self._get_param("front_left_mux_channel", 2)),
+                "mux_channel": int(_get_param(self, "front_left_mux_channel", 2)),
                 "device_address": None,
             },
             "front_right": {
-                "mux_channel": int(self._get_param("front_right_mux_channel", 3)),
+                "mux_channel": int(_get_param(self, "front_right_mux_channel", 3)),
                 "device_address": None,
             },
             "rear_left": {
-                "mux_channel": int(self._get_param("rear_left_mux_channel", 4)),
+                "mux_channel": int(_get_param(self, "rear_left_mux_channel", 4)),
                 "device_address": None,
             },
             "rear_right": {
-                "mux_channel": int(self._get_param("rear_right_mux_channel", 5)),
+                "mux_channel": int(_get_param(self, "rear_right_mux_channel", 5)),
                 "device_address": None,
             },
         }
@@ -330,61 +318,6 @@ class HubMotorNode(Node):
 #endregion
 
 #region Helper Functions
-    def _get_param(self, name: str, default_value=None):
-        """
-        Generic ROS2 parameter reader.
-
-        - If parameter exists -> returns plain Python value
-        - If not exists -> declares with default and returns value
-        - If a Parameter object is encountered -> unwraps it
-        - Works for int, float, bool, str, list, etc.
-        """
-
-        try:
-            if self.has_parameter(name):
-                param = self.get_parameter(name)
-            else:
-                param = self.declare_parameter(name, default_value)
-        except Exception:
-            # fallback path
-            param = self.get_parameter(name)
-
-        # If already plain python type
-        if not isinstance(param, Parameter):
-            return param
-
-        # Standard ROS2 Parameter object
-        try:
-            return param.value
-        except Exception:
-            pass
-
-        # Deep fallback for Humble edge cases
-        try:
-            pv = param.get_parameter_value()
-
-            if pv.integer_value != 0 or isinstance(default_value, int):
-                return pv.integer_value
-            if pv.double_value != 0.0 or isinstance(default_value, float):
-                return pv.double_value
-            if pv.bool_value in (True, False):
-                return pv.bool_value
-            if pv.string_value != "":
-                return pv.string_value
-            if pv.integer_array_value:
-                return list(pv.integer_array_value)
-            if pv.double_array_value:
-                return list(pv.double_array_value)
-            if pv.bool_array_value:
-                return list(pv.bool_array_value)
-            if pv.string_array_value:
-                return list(pv.string_array_value)
-
-        except Exception:
-            pass
-
-        return default_value
-
     def _wait_for_service(self, client) -> None:
         while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info(

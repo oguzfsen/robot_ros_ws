@@ -1,48 +1,31 @@
 #!/usr/bin/env python3
 
-"""
-Steering encoder node.
-
-This node reads four AS5600 magnetic encoders through the generic I2C service
-and publishes their raw 12-bit steering angle values at the configured rate.
-"""
-
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32MultiArray
 
 from robot_interfaces.srv import I2COperation
-from rclpy.parameter import Parameter
+from Tools import _get_param
 
 
 class EncoderNode(Node):
-    """
-    Reads steering encoder values through the generic I2C service.
-
-    The node sends read requests to /i2c/operation and publishes 
-    the resulting encoder values on /robot/steering_encoders.
-    """
-
     def __init__(self):
-        """
-        Initialize parameters, service client, publisher, and timer.
-        """
         super().__init__("encoder_node", automatically_declare_parameters_from_overrides=True)
 
-        self.bus_id = int(self._get_param("bus_id", 1))
-        self.device_name = str(self._get_param("device_name", "AS5600"))
-        self.device_address = int(self._get_param("device_address", 0x36))
+        self.bus_id = int(_get_param(self, "bus_id", 1))
+        self.device_name = str(_get_param(self, "device_name", "AS5600"))
+        self.device_address = int(_get_param(self, "device_address", 0x36))
 
-        self.use_mux = bool(self._get_param("use_mux", True))
-        self.mux_address = int(self._get_param("mux_address", 0x70))
+        self.use_mux = bool(_get_param(self, "use_mux", True))
+        self.mux_address = int(_get_param(self, "mux_address", 0x70))
 
-        self.frequency = float(self._get_param("frequency", 10.0))
+        self.frequency = float(_get_param(self, "frequency", 10.0))
 
         self.motor_channels = [
-            int(self._get_param("motor1_sd", 7)),
-            int(self._get_param("motor2_sd", 6)),
-            int(self._get_param("motor3_sd", 4)),
-            int(self._get_param("motor4_sd", 5)),
+            int(_get_param(self, "motor1_sd", 7)),
+            int(_get_param(self, "motor2_sd", 6)),
+            int(_get_param(self, "motor3_sd", 4)),
+            int(_get_param(self, "motor4_sd", 5)),
         ]
 
         self.angle_high_register = 0x0C
@@ -62,62 +45,6 @@ class EncoderNode(Node):
 
         self.get_logger().info("encoder_node started")
 
-    def _get_param(self, name: str, default_value=None):
-        """
-        Generic ROS2 parameter reader.
-
-        - If parameter exists -> returns plain Python value
-        - If not exists -> declares with default and returns value
-        - If a Parameter object is encountered -> unwraps it
-        - Works for int, float, bool, str, list, etc.
-        """
-
-        try:
-            if self.has_parameter(name):
-                param = self.get_parameter(name)
-            else:
-                param = self.declare_parameter(name, default_value)
-        except Exception:
-            # fallback path
-            param = self.get_parameter(name)
-
-        # If already plain python type
-        if not isinstance(param, Parameter):
-            return param
-
-        # Standard ROS2 Parameter object
-        try:
-            return param.value
-        except Exception:
-            pass
-
-        # Deep fallback for Humble edge cases
-        try:
-            pv = param.get_parameter_value()
-
-            if pv.integer_value != 0 or isinstance(default_value, int):
-                return pv.integer_value
-            if pv.double_value != 0.0 or isinstance(default_value, float):
-                return pv.double_value
-            if pv.bool_value in (True, False):
-                return pv.bool_value
-            if pv.string_value != "":
-                return pv.string_value
-            if pv.integer_array_value:
-                return list(pv.integer_array_value)
-            if pv.double_array_value:
-                return list(pv.double_array_value)
-            if pv.bool_array_value:
-                return list(pv.bool_array_value)
-            if pv.string_array_value:
-                return list(pv.string_array_value)
-
-        except Exception:
-            pass
-
-        return default_value
-
-            
     
     def _wait_for_service(self, client) -> None:
         while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):

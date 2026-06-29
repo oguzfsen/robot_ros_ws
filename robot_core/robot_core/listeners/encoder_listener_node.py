@@ -5,7 +5,7 @@ from std_msgs.msg import Int32MultiArray
 
 class EncoderListenerNode(Node):
     def __init__(self):
-        super().__init__("encoder_listener_node", automatically_declare_parameters_from_overrides=True)
+        super().__init__("encoder_listener_node")
 
         self.subscription = self.create_subscription(Int32MultiArray, "/robot/steering_encoders", self.subs_callback, 10)
         self.create_timer(1, self.timer_callback)

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter import Parameter
+from Tools import _get_param
 
 from robot_interfaces.srv import (
     EncoderZeroGet,
@@ -16,16 +16,12 @@ from robot_interfaces.srv import (
     MissionSet,
 )
 
-from .Mission import Mission
-
-
-
 class DatabaseNode(Node):
     def __init__(self):
         super().__init__("database_node", automatically_declare_parameters_from_overrides=True)
 
-        self.db_path = self.resolve_db_path(self._get_param("db_path", "robot_brain.db"))
-        tables_json = self._get_param("tables_json", None)
+        self.db_path = self.resolve_db_path(_get_param(self, "db_path", "~/.ros/robot_brain.db"))
+        tables_json = _get_param(self, "tables_json", None)
         self.tables = json.loads(tables_json)
 
         self.service_encoder_zero_get = self.create_service(
@@ -56,66 +52,6 @@ class DatabaseNode(Node):
 
         self.get_logger().info("database_node started")
 
-    def _get_param(self, name: str, default_value=None):
-        """
-        Generic ROS2 parameter reader.
-
-        - If parameter exists -> returns plain Python value
-        - If not exists -> declares with default and returns value
-        - If a Parameter object is encountered -> unwraps it
-        - Works for int, float, bool, str, list, etc.
-        """
-
-        try:
-            if self.has_parameter(name):
-                param = self.get_parameter(name)
-            else:
-                param = self.declare_parameter(name, default_value)
-        except Exception:
-            param = self.get_parameter(name)
-
-        if not isinstance(param, Parameter):
-            return param
-
-        try:
-            return param.value
-        except Exception:
-            pass
-
-        try:
-            pv = param.get_parameter_value()
-
-            if pv.integer_value != 0 or isinstance(default_value, int):
-                return pv.integer_value
-            if pv.double_value != 0.0 or isinstance(default_value, float):
-                return pv.double_value
-            if pv.bool_value in (True, False):
-                return pv.bool_value
-            if pv.string_value != "":
-                return pv.string_value
-            if pv.integer_array_value:
-                return list(pv.integer_array_value)
-            if pv.double_array_value:
-                return list(pv.double_array_value)
-            if pv.bool_array_value:
-                return list(pv.bool_array_value)
-            if pv.string_array_value:
-                return list(pv.string_array_value)
-
-        except Exception:
-            pass
-
-        return default_value
-
-    def resolve_db_path(self, db_path: str) -> str:
-        """Expand the configured database path and create its parent directory."""
-        resolved_path = os.path.abspath(os.path.expandvars(os.path.expanduser(db_path)))
-        parent_dir = os.path.dirname(resolved_path)
-
-        if parent_dir:
-            os.makedirs(parent_dir, exist_ok=True)
-
-        return resolved_path
 
     def encoder_zero_get_callback(self, request, response):
         del request
@@ -201,6 +137,18 @@ class DatabaseNode(Node):
         ...
 
 
+#region General Functions
+
+    def resolve_db_path(self, db_path: str) -> str:
+        """Expand the configured database path and create its parent directory."""
+        resolved_path = os.path.abspath(os.path.expandvars(os.path.expanduser(db_path)))
+        parent_dir = os.path.dirname(resolved_path)
+
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+
+        return resolved_path
+    
     @staticmethod
     def _utc_now_iso() -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
@@ -326,6 +274,8 @@ class DatabaseNode(Node):
         placeholders = ", ".join(["?"] * len(values))
         sql = f"INSERT INTO {table_name} ({', '.join(names)}) VALUES ({placeholders})"
         cursor.execute(sql, values)
+#endregion
+
 
 
 def main(args=None):

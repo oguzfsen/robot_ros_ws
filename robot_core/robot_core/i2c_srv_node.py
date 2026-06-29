@@ -36,7 +36,7 @@ class I2CSrvNode(Node):
         Initialize the I2C service node, validate the default I2C device path,
         and create the ROS 2 service.
         """
-        super().__init__("i2c_srv_node", automatically_declare_parameters_from_overrides=True)
+        super().__init__("i2c_srv_node")
 
         self.default_bus_path = "/dev/i2c-1"
         self.bus_lock = threading.Lock()
@@ -215,9 +215,6 @@ class I2CSrvNode(Node):
 
 
 def main(args=None):
-    """
-    Start ROS 2 node.
-    """
     rclpy.init(args=args)
 
     node = I2CSrvNode()
