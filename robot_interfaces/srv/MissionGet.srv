@@ -1,6 +1,5 @@
 uint8 mission_id
 ---
-bool has_data
 uint mission_id
 string name
 float64 home_lat

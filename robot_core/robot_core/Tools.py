@@ -29,6 +29,11 @@ def str_to_time(time_str: str) -> dt:
     """ISO string'i tekrar datetime nesnesine çevirir."""
     return dt.fromisoformat(time_str)
 
+def clamp_int(value: int, minimum: int, maximum: int) -> int:
+    if minimum > maximum:
+        raise ValueError("minimum cannot be greater than maximum")
+    return min(max(value, minimum), maximum)
+
 {staticmethod}
 def _get_param(cls, name: str, default_value=None):
     """
