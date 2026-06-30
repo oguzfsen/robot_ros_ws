@@ -8,23 +8,41 @@ from std_msgs.msg import UInt8MultiArray
 
 from station_interfaces.msg import Gnss
 
-from .Tools import _get_param
-from .gnss_controller import GnssController
+from robot_core.Tools import _get_param
+from robot_core.gnss_controller import GnssController
 
 
 class GnssRoverNode(Node):
     def __init__(self):
-        super().__init__("gnss_rover_node", automatically_declare_parameters_from_overrides=True,)
+        super().__init__(
+            "gnss_rover_node",
+            automatically_declare_parameters_from_overrides=True,
+        )
 
-        self.serial_port = str(_get_param(self,"serial_port", "/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00")) 
+        self.serial_port = str(
+            _get_param(
+                self,
+                "serial_port",
+                (
+                    "/dev/serial/by-id/"
+                    "usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"
+                ),
+            )
+        )
         self.baudrate = int(_get_param(self, "baudrate", 460800))
-        self.serial_timeout_s = float(_get_param(self, "serial_timeout_s", 0.2))
-        self.measurement_rate_hz = float(_get_param(self, "measurement_rate_hz", 10.0))
-        self.publish_period_s = float(_get_param(self, "publish_period_s", 0.1))
+        self.serial_timeout_s = float(
+            _get_param(self, "serial_timeout_s", 0.2)
+        )
+        self.measurement_rate_hz = float(
+            _get_param(self, "measurement_rate_hz", 10.0)
+        )
+        self.publish_period_s = float(
+            _get_param(self, "publish_period_s", 0.1)
+        )
         self.log_period_s = float(_get_param(self, "log_period_s", 1.0))
         self._last_log_time = 0.0
 
-
+        self.gnss_pub = self.create_publisher(Gnss, "/robot/gnss", 10)
         self.rtcm_sub = self.create_subscription(
             UInt8MultiArray,
             "/station/rtcm",
@@ -32,15 +50,13 @@ class GnssRoverNode(Node):
             10,
         )
 
-        self.gnss_pub = self.create_publisher(Gnss, "/robot/gnss", 10)
-
         self.gnss = GnssController(
             self.serial_port,
             self.baudrate,
             serial_timeout_s=self.serial_timeout_s,
             measurement_rate_hz=self.measurement_rate_hz,
         )
-        
+
         is_gnss_operational = False
         try:
             if self.gnss.connect():

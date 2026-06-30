@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 from geopy.distance import distance
-from Tools import clamp_int
+from robot_core.Tools import clamp_int
 
 
 class Mission:

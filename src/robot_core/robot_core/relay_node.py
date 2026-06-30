@@ -14,7 +14,7 @@ from rclpy.node import Node
 
 from robot_interfaces.msg import RobotRelay
 from robot_interfaces.srv import I2COperation
-from Tools import _get_param
+from robot_core.Tools import _get_param
 
 
 class RelayNode(Node):

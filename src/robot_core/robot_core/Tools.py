@@ -5,6 +5,8 @@ from datetime import datetime
 from datetime import datetime as dt
 from typing import Optional
 
+from rclpy.parameter import Parameter
+
 
 class RobotState(IntEnum):
     IDLE = 1
@@ -34,7 +36,6 @@ def clamp_int(value: int, minimum: int, maximum: int) -> int:
         raise ValueError("minimum cannot be greater than maximum")
     return min(max(value, minimum), maximum)
 
-{staticmethod}
 def _get_param(cls, name: str, default_value=None):
     """
     Generic ROS2 parameter reader.

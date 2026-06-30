@@ -16,7 +16,7 @@ from rclpy.node import Node
 
 from robot_interfaces.msg import HubMotor
 from robot_interfaces.srv import I2COperation
-from Tools import _get_param
+from robot_core.Tools import _get_param
 
 
 class HubMotorNode(Node):
@@ -34,7 +34,7 @@ class HubMotorNode(Node):
         self.bus_id = int(_get_param(self, "bus_id", 1))
         self.use_mux = bool(_get_param(self, "use_mux", True))
         self.mux_address = int(_get_param(self, "mux_address", 113))
-        self.primary_address = int(_get_param(self, "primary_address" 96))
+        self.primary_address = int( _get_param(self, "primary_address", 96))
         self.secondary_address = int(_get_param(self, "secondary_address", 97 ))
         self.min_dac_value = int(_get_param(self, "min_dac_value", 0))
         self.max_dac_value = int(_get_param(self, "max_dac_value", 4095))

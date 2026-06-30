@@ -24,10 +24,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HubMotor.msg"
   "msg/GnssAbs.msg"
   "msg/IncomingMessage.msg"
+  "msg/Rtcm.msg"
+  "msg/Command.msg"
+  "msg/Mission.msg"
   "srv/I2COperation.srv"
   "srv/Trigger.srv"
   "srv/EncoderZeroGet.srv"
   "srv/EncoderZeroSet.srv"
+  "srv/MissionGet.srv"
+  "srv/MissionSet.srv"
   DEPENDENCIES std_msgs
 )
 

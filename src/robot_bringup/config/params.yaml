@@ -119,7 +119,7 @@ hubmotor_node:
     rear_left_mux_channel: 4
     rear_right_mux_channel: 5
 
-gnss_node:
+gnss_rover_node:
   ros__parameters:
     serial_port: /dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00
     baudrate: 460800

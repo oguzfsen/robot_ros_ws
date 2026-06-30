@@ -4,14 +4,13 @@ from rclpy.parameter import Parameter
 from robot_interfaces.msg import (
     HubMotor,
     RcInput,
-    RobotDiagnostics,
     RobotRelay,
     Steer,
 )
 
 from robot_core.Buzzer import Buzzer
 from robot_core.Led import Led
-from Tools import RobotState, _get_param
+from robot_core.Tools import RobotState, _get_param
 
 class CoreNode(Node):
 
@@ -32,7 +31,6 @@ class CoreNode(Node):
         self.relay_msg = RobotRelay()
         self.steer_msg = Steer()
         self.hubmotor_msg = HubMotor()
-        self.robot_diag_msg = RobotDiagnostics()
 
         self.rc_steer = 0
         self.last_armed = False
@@ -58,11 +56,6 @@ class CoreNode(Node):
         self.hubmotor_publisher = self.create_publisher(
             HubMotor,
             "/robot/hub_motor",
-            10,
-        )
-        self.diag_publisher = self.create_publisher(
-            RobotDiagnostics,
-            "/robot/mode",
             10,
         )
 

@@ -34,8 +34,8 @@ setup(
             "steer_zero_node = robot_core.steer_zero_node:main",
             "compass_node = robot_core.compass_node:main",
             "hubmotor_node = robot_core.hubmotor_node:main",
-            "gnss_node = robot_core.gnss_node:main",
-            "telemetry_bridge_node = robot_core.telemetry_bridge_node:main",
+            "gnss_rover_node = robot_core.gnss_rover_node:main",
+            "telemetry_node = robot_core.telemetry_node:main",
             "rc_listener_node = robot_core.listeners.rc_listener_node:main",
             "encoder_listener_node = robot_core.listeners.encoder_listener_node:main",
             "compass_listener_node = robot_core.listeners.compass_listener_node:main"

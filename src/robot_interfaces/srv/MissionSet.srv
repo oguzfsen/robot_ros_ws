@@ -1,4 +1,4 @@
-uint mission_id
+uint8 mission_id
 string name
 float64 home_lat
 float64 home_lon
