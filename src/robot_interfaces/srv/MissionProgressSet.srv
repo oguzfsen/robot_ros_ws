@@ -1,0 +1,6 @@
+uint8 mission_id
+uint32 last_waypoint
+---
+bool success
+string error
+uint8[] data

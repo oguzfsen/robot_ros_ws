@@ -26,13 +26,14 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/IncomingMessage.msg"
   "msg/Rtcm.msg"
   "msg/Command.msg"
-  "msg/Mission.msg"
+  "msg/MissionState.msg"
   "srv/I2COperation.srv"
   "srv/Trigger.srv"
   "srv/EncoderZeroGet.srv"
   "srv/EncoderZeroSet.srv"
   "srv/MissionGet.srv"
   "srv/MissionSet.srv"
+  "srv/MissionProgressSet.srv"
   DEPENDENCIES std_msgs
 )
 

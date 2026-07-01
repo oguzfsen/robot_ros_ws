@@ -1,14 +1,6 @@
 uint8 mission_id
-string name
-float64 home_lat
-float64 home_lon
 string receive_date
-bool is_completed
-int8 completion_rate
-float64 total_distance
 string raw_json
-string waypoints
-uint32 last_waypoint
 ---
 bool success
 string error

@@ -7,16 +7,25 @@ from datetime import datetime, timezone
 
 import rclpy
 from rclpy.node import Node
+from robot_core.Mission import Mission
 from robot_core.Tools import _get_param
 
 from robot_interfaces.srv import (
     EncoderZeroGet,
     EncoderZeroSet,
     MissionGet,
+    MissionProgressSet,
     MissionSet,
 )
 
 class DatabaseNode(Node):
+    MISSION_COLUMNS = (
+        "mission_id",
+        "receive_date",
+        "raw_json",
+        "last_waypoint",
+    )
+
     def __init__(self):
         super().__init__("database_node", automatically_declare_parameters_from_overrides=True)
 
@@ -46,6 +55,12 @@ class DatabaseNode(Node):
             MissionSet,
             "/database/mission_set",
             self.mission_set_callback,
+        )
+
+        self.mission_progress_set = self.create_service(
+            MissionProgressSet,
+            "/database/mission_progress_set",
+            self.mission_progress_set_callback,
         )
 
         self.ensure_database()
@@ -131,10 +146,121 @@ class DatabaseNode(Node):
         
 
     def mission_get_callback(self, request, response):
-        ...
+        self._reset_mission_get_response(response)
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            row = self._fetch_mission_row(cursor, int(request.mission_id))
+            conn.close()
+
+            if row is None:
+                self.get_logger().warn(
+                    f"mission_get requested mission_id={int(request.mission_id)} but no row was found"
+                )
+                return response
+
+            self._populate_mission_get_response(response, row)
+            return response
+
+        except Exception as exc:
+            self.get_logger().error(f"mission_get failed: {exc}")
+            self._reset_mission_get_response(response)
+            return response
 
     def mission_set_callback(self, request, response):
-        ...
+        try:
+            record = self._build_mission_record_from_request(request)
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            existing_row_id = self._find_mission_row_id(cursor, record["mission_id"])
+            if existing_row_id is None:
+                self._insert_mission_row(cursor, record)
+            else:
+                self._update_mission_row(cursor, existing_row_id, record)
+
+            conn.commit()
+            conn.close()
+
+            response.success = True
+            response.error = ""
+            response.data = list(
+                json.dumps(record, ensure_ascii=False).encode("utf-8")
+            )
+
+            self.get_logger().info(
+                "mission_set stored "
+                f"mission_id={record['mission_id']} "
+                f"last_waypoint={record['last_waypoint']}"
+            )
+            return response
+
+        except Exception as exc:
+            response.success = False
+            response.error = f"mission set failed: {exc}"
+            response.data = []
+            self.get_logger().error(response.error)
+            return response
+
+    def mission_progress_set_callback(self, request, response):
+        try:
+            mission_id = int(request.mission_id)
+            last_waypoint = max(0, int(request.last_waypoint))
+
+            if mission_id <= 0:
+                response.success = False
+                response.error = "mission_id must be greater than 0"
+                response.data = []
+                return response
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            row_id = self._find_mission_row_id(cursor, mission_id)
+            if row_id is None:
+                conn.close()
+                response.success = False
+                response.error = f"mission_id={mission_id} not found"
+                response.data = []
+                return response
+
+            cursor.execute(
+                "UPDATE mission SET last_waypoint = ? WHERE id = ?",
+                (last_waypoint, row_id),
+            )
+            conn.commit()
+
+            cursor.execute(
+                f"""
+                SELECT {', '.join(self.MISSION_COLUMNS)}
+                FROM mission
+                WHERE id = ?
+                """,
+                (row_id,),
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            record = self._mission_row_to_dict(row)
+            response.success = True
+            response.error = ""
+            response.data = list(json.dumps(record, ensure_ascii=False).encode("utf-8"))
+
+            self.get_logger().info(
+                "mission_progress_set stored "
+                f"mission_id={mission_id} last_waypoint={last_waypoint}"
+            )
+            return response
+
+        except Exception as exc:
+            response.success = False
+            response.error = f"mission progress set failed: {exc}"
+            response.data = []
+            self.get_logger().error(response.error)
+            return response
 
 
 #region General Functions
@@ -274,6 +400,122 @@ class DatabaseNode(Node):
         placeholders = ", ".join(["?"] * len(values))
         sql = f"INSERT INTO {table_name} ({', '.join(names)}) VALUES ({placeholders})"
         cursor.execute(sql, values)
+
+    def _reset_mission_get_response(self, response):
+        response.mission_id = 0
+        response.receive_date = ""
+        response.raw_json = ""
+        response.last_waypoint = 0
+
+    def _fetch_mission_row(self, cursor, mission_id: int):
+        """mission_id verilirse onu, 0 verilirse en son gecerli mission kaydini getirir."""
+        selected_columns = ", ".join(self.MISSION_COLUMNS)
+
+        if mission_id > 0:
+            cursor.execute(
+                f"""
+                SELECT {selected_columns}
+                FROM mission
+                WHERE mission_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (mission_id,),
+            )
+            return cursor.fetchone()
+
+        cursor.execute(
+            f"""
+            SELECT {selected_columns}
+            FROM mission
+            WHERE raw_json != ''
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        if row is not None:
+            return row
+
+        cursor.execute(
+            f"""
+            SELECT {selected_columns}
+            FROM mission
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        return cursor.fetchone()
+
+    def _populate_mission_get_response(self, response, row) -> None:
+        record = self._mission_row_to_dict(row)
+        response.mission_id = int(record["mission_id"])
+        response.receive_date = str(record["receive_date"])
+        response.raw_json = str(record["raw_json"])
+        response.last_waypoint = int(record["last_waypoint"])
+
+    def _build_mission_record_from_request(self, request) -> dict:
+        """Servis istegini veritabanina yazilacak tek bir mission kaydina normalize eder."""
+        receive_date = str(request.receive_date).strip() or self._utc_now_iso()
+        raw_json = str(request.raw_json or "").strip()
+        if not raw_json:
+            raise ValueError("raw_json is required for mission_set")
+
+        mission = Mission(raw_json, last_waypoint=0)
+        if int(request.mission_id) not in (0, mission.cloud_id):
+            self.get_logger().warn(
+                "mission_set request mission_id differs from JSON mission ID; "
+                f"using JSON value {mission.cloud_id}"
+            )
+
+        return mission.to_storage_dict(
+            receive_date=receive_date,
+            last_waypoint=0,
+        )
+
+    def _find_mission_row_id(self, cursor, mission_id: int):
+        cursor.execute(
+            """
+            SELECT id
+            FROM mission
+            WHERE mission_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (mission_id,),
+        )
+        row = cursor.fetchone()
+        return None if row is None else int(row[0])
+
+    def _mission_row_to_dict(self, row) -> dict:
+        if row is None:
+            raise ValueError("mission row can not be None")
+
+        return {
+            "mission_id": int(row[0] or 0),
+            "receive_date": str(row[1] or ""),
+            "raw_json": str(row[2] or ""),
+            "last_waypoint": max(0, int(row[3] or 0)),
+        }
+
+    def _insert_mission_row(self, cursor, record: dict) -> None:
+        column_names = ", ".join(self.MISSION_COLUMNS)
+        placeholders = ", ".join(["?"] * len(self.MISSION_COLUMNS))
+        values = tuple(record[column] for column in self.MISSION_COLUMNS)
+
+        cursor.execute(
+            f"INSERT INTO mission ({column_names}) VALUES ({placeholders})",
+            values,
+        )
+
+    def _update_mission_row(self, cursor, row_id: int, record: dict) -> None:
+        assignments = ", ".join(f"{column} = ?" for column in self.MISSION_COLUMNS)
+        values = tuple(record[column] for column in self.MISSION_COLUMNS) + (row_id,)
+
+        cursor.execute(
+            f"UPDATE mission SET {assignments} WHERE id = ?",
+            values,
+        )
 #endregion
 
 

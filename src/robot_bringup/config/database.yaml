@@ -17,16 +17,9 @@ database_node:
           "columns": [
             {"name": "id", "type": "INTEGER PRIMARY KEY"},
             {"name": "mission_id", "type": "INTEGER", "default": 0},
-            {"name": "name", "type": "TEXT", "default": ""},
-            {"name": "home_lat", "type": "REAL", "default": 0.0},
-            {"name": "home_lon", "type": "REAL", "default": 0.0},
             {"name": "receive_date", "type": "TEXT", "default": ""},
-            {"name": "is_completed", "type": "BOOLEAN", "default": false},
-            {"name": "completion_rate", "type": "REAL", "default": 0.0},
-            {"name": "total_distance", "type": "REAL", "default": 0.0},
             {"name": "raw_json", "type": "TEXT", "default": ""},
-            {"name": "waypoints", "type": "TEXT", "default": ""},
-            {"name": "last_waypoint", "type": "INTEGER", "default": 0},
+            {"name": "last_waypoint", "type": "INTEGER", "default": 0}
           ]
         }
       }

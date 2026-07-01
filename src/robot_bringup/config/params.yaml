@@ -130,13 +130,15 @@ gnss_rover_node:
 
 telemetry_node:
   ros__parameters:
+    robot_id: UTAEMBOT
     serial_port: /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
     baudrate: 460800
     serial_timeout_s: 0.1
     reconnect_delay_s: 2.0
-    write_idle_sleep_s: 0.01
-    status_hz: 1.0
+    database_mission_set_service: /database/mission_set
+    state_topic: /robot/state
+    gnss_topic: /robot/gnss
+    mission_state_topic: /robot/mission_state
+    rtcm_topic: /station/rtcm
     status_topic: /robot/status
-    rtcm_topic : /station/rtcm
     command_topic: /user/command
-    mission_topic: /user/mission
