@@ -19,9 +19,9 @@ class CoreNode(Node):
 
         self.throttle_max = float(_get_param(self, "throttle_deadzone", 80.0))
         self.throttle_deadzone = float(_get_param(self, "throttle_deadzone", 5.0))
-        self.update_hz = int(_get_param(self, "update_hz"), 10)
+        self.update_hz = int(_get_param(self, "update_hz", 10))
         buzzer_gpio_pin = int(_get_param(self, "buzzer_pin", 18))
-        led_gpio_pin = int(_get_param(self, "led_pin", 23)),
+        led_gpio_pin = int(_get_param(self, "led_pin", 23))
 
         self.buzzer = Buzzer(buzzer_gpio_pin)
         self.led = Led(led_gpio_pin)
@@ -67,11 +67,6 @@ class CoreNode(Node):
     def update(self) -> None:
         self.buzzer.update()
         self.led.update(self.robot_state)
-        self.publish_diag()
-
-    def publish_diag(self) -> None:
-        ...
-
 
         
     def rc_callback(self, msg: RcInput) -> None:

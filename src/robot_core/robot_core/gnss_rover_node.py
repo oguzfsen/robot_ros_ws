@@ -6,7 +6,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import UInt8MultiArray
 
-from station_interfaces.msg import Gnss
+from robot_interfaces.msg import Gnss
 
 from robot_core.Tools import _get_param
 from robot_core.gnss_controller import GnssController
@@ -41,14 +41,19 @@ class GnssRoverNode(Node):
         )
         self.log_period_s = float(_get_param(self, "log_period_s", 1.0))
         self._last_log_time = 0.0
+        self.rtcm_log_period_s = float(_get_param(self, "rtcm_log_period_s", 2.0))
+        self._last_rtcm_log_time = 0.0
+        self._rtcm_frame_count = 0
 
-        self.gnss_pub = self.create_publisher(Gnss, "/robot/gnss", 10)
+        self.rtcm_topic = str(_get_param(self, "rtcm_topic", "/station/rtcm"))
         self.rtcm_sub = self.create_subscription(
             UInt8MultiArray,
-            "/station/rtcm",
+            self.rtcm_topic,
             self.rtcm_callback,
             10,
         )
+
+        self.gnss_pub = self.create_publisher(Gnss, "/robot/gnss", 10)
 
         self.gnss = GnssController(
             self.serial_port,
@@ -83,7 +88,14 @@ class GnssRoverNode(Node):
         self.create_timer(self.publish_period_s, self.publish_gnss_callback)
 
     def rtcm_callback(self, msg: UInt8MultiArray) -> None:
-        self.gnss.send_rtcm(bytes(msg.data))
+        payload = bytes(msg.data)
+        self.gnss.send_rtcm(payload)
+        self._rtcm_frame_count += 1
+
+        now = time.monotonic()
+        if now - self._last_rtcm_log_time >= self.rtcm_log_period_s:
+            self._last_rtcm_log_time = now
+
 
     def publish_gnss_callback(self) -> None:
         pos = self.gnss.get_position()
@@ -108,9 +120,11 @@ class GnssRoverNode(Node):
 
         now = time.monotonic()
         if now - self._last_log_time >= self.log_period_s:
+            return
             self._last_log_time = now
             self.get_logger().info(
                 f"Mod: {msg.fix_type} | Uydu: {msg.satellite_count} "
+                f"| fix_type: {msg.fix_type}"
                 f"| Hassasiyet: {msg.accuracy_m} m "
                 f"| Hiz: {msg.ground_speed_m_s} m/s "
                 f"| Yon: {msg.heading_deg} deg | Enlem: {msg.latitude} "

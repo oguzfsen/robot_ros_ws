@@ -16,24 +16,25 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/RcInput.msg"
-  "msg/RobotStatus.msg"
-  "msg/RobotRelay.msg"
-  "msg/Steer.msg"
-  "msg/Compass.msg"
-  "msg/HubMotor.msg"
-  "msg/GnssAbs.msg"
-  "msg/IncomingMessage.msg"
-  "msg/Rtcm.msg"
   "msg/Command.msg"
+  "msg/Compass.msg"
+  "msg/Gnss.msg"
+  "msg/GnssAbs.msg"
+  "msg/HubMotor.msg"
+  "msg/IncomingMessage.msg"
   "msg/MissionState.msg"
-  "srv/I2COperation.srv"
-  "srv/Trigger.srv"
+  "msg/RcInput.msg"
+  "msg/RobotRelay.msg"
+  "msg/RobotStatus.msg"
+  "msg/Rtcm.msg"
+  "msg/Steer.msg"
   "srv/EncoderZeroGet.srv"
   "srv/EncoderZeroSet.srv"
+  "srv/I2COperation.srv"
   "srv/MissionGet.srv"
-  "srv/MissionSet.srv"
   "srv/MissionProgressSet.srv"
+  "srv/MissionSet.srv"
+  "srv/Trigger.srv"
   DEPENDENCIES std_msgs
 )
 

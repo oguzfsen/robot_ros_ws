@@ -7,6 +7,7 @@ core_node:
     throttle_input_max: 100.0
     throttle_deadband: 5.0
     max_steer_angle_deg: 90.0
+    update_hz: 10
     
     buzzer_pin: 18
     led_pin: 23
@@ -127,12 +128,13 @@ gnss_rover_node:
     measurement_rate_hz: 10.0
     publish_period_s: 0.1
     log_period_s: 1.0
+    rtcm_topic: /station/rtcm
 
 telemetry_node:
   ros__parameters:
     robot_id: UTAEMBOT
     serial_port: /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
-    baudrate: 460800
+    baudrate: 57600
     serial_timeout_s: 0.1
     reconnect_delay_s: 2.0
     database_mission_set_service: /database/mission_set

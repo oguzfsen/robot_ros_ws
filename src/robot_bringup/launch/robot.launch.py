@@ -1,10 +1,22 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 import os
 
 def generate_launch_description():
     ld = LaunchDescription()
+    ros_domain_id = LaunchConfiguration("ros_domain_id")
+
+    ld.add_action(
+        DeclareLaunchArgument(
+            "ros_domain_id",
+            default_value="21",
+            description="ROS domain id for robot stack",
+        )
+    )
+    ld.add_action(SetEnvironmentVariable("ROS_DOMAIN_ID", ros_domain_id))
 
     params = os.path.join(
         get_package_share_directory("robot_bringup"),
@@ -70,9 +82,9 @@ def generate_launch_description():
         parameters=[params]
     )
 
-    gnss_node = Node(
+    gnss_rover_node = Node(
         package="robot_core",
-        executable="gnss_node",
+        executable="gnss_rover_node",
         parameters=[params]
     )
 
@@ -91,7 +103,7 @@ def generate_launch_description():
     ld.add_action(hubmotor_node)
     ld.add_action(compass_node)
     ld.add_action(core_node)
-    ld.add_action(gnss_node)
+    ld.add_action(gnss_rover_node)
     ld.add_action(telemetry_node)
 
     return ld

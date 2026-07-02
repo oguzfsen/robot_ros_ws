@@ -20,6 +20,12 @@ from robot_core.Tools import RobotState, _get_param
 
 
 class TelemetryNode(Node):
+    CRC24Q_POLY = 0x1864CFB
+    RTCM_PREAMBLE = 0xD3
+    JSON_FRAME_PREFIX = b"JSN:"
+    JSON_FRAME_HEX_WIDTH = 8
+    JSON_FRAME_MAX_PAYLOAD_BYTES = 16384
+
     def __init__(self):
         super().__init__(
             "telemetry_node",
@@ -33,9 +39,13 @@ class TelemetryNode(Node):
         )
 
         self.serial_port = str(_get_param(self, "serial_port", default_serial_port))
-        self.baudrate = int(_get_param(self, "baudrate", 460800))
+        self.baudrate = int(_get_param(self, "baudrate", 57600))
         self.serial_timeout_s = float(_get_param(self, "serial_timeout_s", 0.1))
         self.reconnect_delay_s = float(_get_param(self, "reconnect_delay_s", 2.0))
+        self.status_period_s = float(_get_param(self, "status_period_s", 1.0))
+        self.status_quiet_after_rx_s = float(
+            _get_param(self, "status_quiet_after_rx_s", 0.2)
+        )
         self.robot_id = str(_get_param(self, "robot_id", "UTAEMBOT"))
 
         self.state_topic = str(_get_param(self, "state_topic", "/robot/state"))
@@ -80,14 +90,19 @@ class TelemetryNode(Node):
         self._running = True
         self._rx_buffer = bytearray()
         self._last_connect_log_time = 0.0
+        self._last_status_log_time = 0.0
+        self._last_rtcm_log_time = 0.0
+        self._last_status_defer_log_time = 0.0
+        self._last_serial_rx_time = 0.0
         self._serial_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._pending_status_responses: list[dict[str, Any]] = []
         self._latest_robot_state = int(RobotState.IDLE)
         self._latest_gnss: Gnss | None = None
         self._latest_mission_state: MissionState | None = None
+        self._rtcm_frame_count = 0
 
-        self.status_timer = self.create_timer(1.0, self.publish_status)
+        self.status_timer = self.create_timer(self.status_period_s, self.publish_status)
 
         self._read_thread = threading.Thread(
             target=self._read_serial_loop,
@@ -107,6 +122,12 @@ class TelemetryNode(Node):
                     self.serial_port,
                     self.baudrate,
                     timeout=self.serial_timeout_s,
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                    xonxoff=False,
+                    rtscts=False,
+                    dsrdtr=False,
                 )
                 self._reset_read_buffer()
                 self.get_logger().info(
@@ -138,6 +159,7 @@ class TelemetryNode(Node):
                 if not chunk:
                     continue
 
+                self._last_serial_rx_time = time.monotonic()
                 self._rx_buffer.extend(chunk)
                 self._process_serial_buffer()
             except Exception as exc:
@@ -155,20 +177,29 @@ class TelemetryNode(Node):
 
             first_byte = self._rx_buffer[0]
 
-            if first_byte == 0xD3:
+            if first_byte == self.RTCM_PREAMBLE:
                 rtcm_frame = self._extract_rtcm_frame()
                 if rtcm_frame is None:
                     return
+                if not rtcm_frame:
+                    continue
                 self._publish_bytes(self.rtcm_pub, rtcm_frame)
+                self._rtcm_frame_count += 1
+                now = time.monotonic()
+                if now - self._last_rtcm_log_time >= 2.0:
+                    self._last_rtcm_log_time = now
+                    self.get_logger().info(
+                        "RTCM seri hattan alindi ve /station/rtcm'e basildi: "
+                        f"frame_count={self._rtcm_frame_count} bytes={len(rtcm_frame)}"
+                    )
                 continue
 
-            if first_byte in (ord("{"), ord("[")):
-                json_end = self._find_complete_json_end(self._rx_buffer)
-                if json_end is None:
+            if first_byte == self.JSON_FRAME_PREFIX[0]:
+                json_bytes = self._extract_json_frame_payload()
+                if json_bytes is None:
                     return
-
-                json_bytes = bytes(self._rx_buffer[:json_end])
-                del self._rx_buffer[:json_end]
+                if not json_bytes:
+                    continue
 
                 try:
                     json_text = json_bytes.decode("utf-8")
@@ -185,7 +216,6 @@ class TelemetryNode(Node):
                 del self._rx_buffer[0]
 
     def _handle_json_message(self, payload_obj, json_text: str) -> None:
-        self.get_logger().info(f"Telemetry RX: {json_text}")
 
         if not isinstance(payload_obj, dict):
             self.get_logger().warn("Telemetry mesaji JSON ama obje degil; yok sayildi.")
@@ -211,6 +241,12 @@ class TelemetryNode(Node):
         source = str(payload_obj.get("source", "")).strip()
         robot_id = str(payload_obj.get("robot_id", "")).strip() or self.robot_id
 
+        self.get_logger().info(
+            "Command serialden alindi ve ROS'a basiliyor: "
+            f"request_id={request_id or 'missing'} "
+            f"command_type={command_type or 'missing'}"
+        )
+
         command_msg = Command()
         command_msg.header.stamp = self.get_clock().now().to_msg()
         command_msg.robot_id = robot_id
@@ -225,6 +261,10 @@ class TelemetryNode(Node):
             success=True,
             error_text="",
             response_text="command received by telemetry_node",
+        )
+        self.get_logger().info(
+            "Command icin response kuyruga alindi: "
+            f"request_id={request_id or 'missing'}"
         )
 
     def _handle_mission_message(self, payload_obj: dict[str, Any]) -> None:
@@ -277,6 +317,16 @@ class TelemetryNode(Node):
         self._latest_mission_state = msg
 
     def publish_status(self) -> None:
+        now = time.monotonic()
+        if (
+            self._last_serial_rx_time > 0.0
+            and now - self._last_serial_rx_time < self.status_quiet_after_rx_s
+        ):
+            if now - self._last_status_defer_log_time >= 2.0:
+                self._last_status_defer_log_time = now
+
+            return
+
         pending_responses = self._drain_pending_status_responses()
 
         try:
@@ -284,6 +334,17 @@ class TelemetryNode(Node):
             self.status_pub.publish(status_msg)
             status_payload = self._robot_status_to_dict(status_msg)
             self._write_serial_json(status_payload)
+            now = time.monotonic()
+            if now - self._last_status_log_time >= 2.0:
+                self._last_status_log_time = now
+
+                #self.get_logger().info(
+                #    "Robot status seri hatta yazildi: "
+                #    f"robot_id={status_payload['robot_id']} "
+                #    f"state={status_payload['robot_state']} "
+                #    f"mission_id={status_payload['mission_id']} "
+                #    f"responses={len(pending_responses)}"
+                #)
         except Exception as exc:
             if pending_responses:
                 self._restore_pending_status_responses(pending_responses)
@@ -427,13 +488,13 @@ class TelemetryNode(Node):
         return {
             "robot_id": getattr(msg, "robot_id", ""),
             "robot_state": int(msg.robot_state),
-            "latitude": float(msg.latitude),
-            "longitude": float(msg.longitude),
-            "altitude": float(msg.altitude),
-            "speed": float(msg.speed),
-            "heading": float(msg.heading),
+            "latitude": round(float(msg.latitude), 7),
+            "longitude": round(float(msg.longitude), 7),
+            "altitude": round(float(msg.altitude), 3),
+            "speed": round(float(msg.speed), 3),
+            "heading": round(float(msg.heading), 3),
             "gnss_fix_type": str(msg.gnss_fix_type),
-            "accuracy": float(msg.accuracy),
+            "accuracy": round(float(msg.accuracy), 3),
             "energy": int(msg.energy),
             "tank": int(msg.tank),
             "malfunction": bool(msg.malfunction),
@@ -444,8 +505,15 @@ class TelemetryNode(Node):
         }
 
     def _write_serial_json(self, payload_obj: dict[str, Any]) -> None:
-        payload = (json.dumps(payload_obj, ensure_ascii=False) + "\n").encode("utf-8")
-        self._write_serial_bytes(payload)
+        json_payload = (
+            json.dumps(
+                payload_obj,
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+        ).encode("utf-8")
+        frame = self._build_json_frame(json_payload)
+        self._write_serial_bytes(frame)
 
     def _write_serial_bytes(self, payload: bytes) -> None:
         if not self._connect_serial():
@@ -455,6 +523,7 @@ class TelemetryNode(Node):
             if self.serial_conn is None:
                 raise RuntimeError("serial connection is not available")
             self.serial_conn.write(payload)
+            self.serial_conn.flush()
 
     def _publish_bytes(self, publisher, payload: bytes) -> None:
         msg = UInt8MultiArray()
@@ -471,48 +540,61 @@ class TelemetryNode(Node):
             return None
 
         frame = bytes(self._rx_buffer[:frame_length])
+        if not self._is_valid_rtcm_frame(frame):
+            del self._rx_buffer[0]
+            self.get_logger().warn("Gecersiz RTCM CRC goruldu, senkron yeniden araniyor.")
+            return b""
+
         del self._rx_buffer[:frame_length]
         return frame
 
-    def _find_complete_json_end(self, buffer: bytearray) -> int | None:
-        depth = 0
-        in_string = False
-        escape = False
+    def _extract_json_frame_payload(self) -> bytes | None:
+        prefix_len = len(self.JSON_FRAME_PREFIX)
+        header_len = prefix_len + self.JSON_FRAME_HEX_WIDTH + 1
 
-        for index, byte in enumerate(buffer):
-            if in_string:
-                if escape:
-                    escape = False
-                    continue
-                if byte == ord("\\"):
-                    escape = True
-                    continue
-                if byte == ord('"'):
-                    in_string = False
-                continue
+        if len(self._rx_buffer) < prefix_len:
+            return None
 
-            if byte == ord('"'):
-                in_string = True
-                continue
+        if not self._rx_buffer.startswith(self.JSON_FRAME_PREFIX):
+            del self._rx_buffer[0]
+            return b""
 
-            if byte in (ord("{"), ord("[")):
-                depth += 1
-                continue
+        if len(self._rx_buffer) < header_len:
+            return None
 
-            if byte in (ord("}"), ord("]")):
-                depth -= 1
-                if depth == 0:
-                    return index + 1
+        if self._rx_buffer[header_len - 1] != ord(":"):
+            del self._rx_buffer[0]
+            return b""
 
-        return None
+        length_bytes = bytes(self._rx_buffer[prefix_len:header_len - 1])
+        try:
+            payload_length = int(length_bytes.decode("ascii"), 16)
+        except Exception:
+            del self._rx_buffer[0]
+            return b""
+
+        if payload_length < 0 or payload_length > self.JSON_FRAME_MAX_PAYLOAD_BYTES:
+            del self._rx_buffer[0]
+            return b""
+
+        total_len = header_len + payload_length
+        if len(self._rx_buffer) < total_len:
+            return None
+
+        payload = bytes(self._rx_buffer[header_len:total_len])
+        del self._rx_buffer[:total_len]
+
+        if self._rx_buffer[:1] == b"\n":
+            del self._rx_buffer[0]
+
+        return payload
 
     def _drop_until_known_start(self) -> None:
         start_indexes = [
             index
             for index in (
-                self._rx_buffer.find(b"{"),
-                self._rx_buffer.find(b"["),
                 self._rx_buffer.find(b"\xD3"),
+                self._rx_buffer.find(self.JSON_FRAME_PREFIX[:1]),
             )
             if index >= 0
         ]
@@ -555,6 +637,32 @@ class TelemetryNode(Node):
             except Exception:
                 pass
             self.serial_conn = None
+
+    def _build_json_frame(self, payload: bytes) -> bytes:
+        header = (
+            self.JSON_FRAME_PREFIX
+            + f"{len(payload):0{self.JSON_FRAME_HEX_WIDTH}X}".encode("ascii")
+            + b":"
+        )
+        return header + payload + b"\n"
+
+    def _is_valid_rtcm_frame(self, frame: bytes) -> bool:
+        if len(frame) < 6 or frame[0] != self.RTCM_PREAMBLE:
+            return False
+
+        expected_crc = (frame[-3] << 16) | (frame[-2] << 8) | frame[-1]
+        actual_crc = self._crc24q(frame[:-3])
+        return expected_crc == actual_crc
+
+    def _crc24q(self, data: bytes) -> int:
+        crc = 0
+        for byte in data:
+            crc ^= byte << 16
+            for _ in range(8):
+                crc <<= 1
+                if crc & 0x1000000:
+                    crc ^= self.CRC24Q_POLY
+        return crc & 0xFFFFFF
 
     def destroy_node(self):
         self._running = False
