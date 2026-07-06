@@ -3,12 +3,21 @@ core_node:
     steering_center: 0.0
     steering_input_max: 100.0
     steering_deadband: 5.0
+    max_steer_angle: 70.0
+
     throttle_center: 0.0
     throttle_input_max: 100.0
     throttle_deadband: 5.0
-    max_steer_angle_deg: 90.0
-    update_hz: 10
-    
+
+    topic_rc_input: /rc/input
+    topic_gnss: /robot/gnss
+    topic_command: /user/command
+
+    topic_relay: /robot/relay
+    topic_steer: /robot/steer
+    topic_hub_motor: /robot/hub_motor
+
+    update_hz: 10    
     buzzer_pin: 18
     led_pin: 23
 

@@ -1,6 +1,19 @@
+#!/usr/bin/env python3
+"""
+core_node robot ros sisteminin yönetim merkezidir.
+Şu Topicleri dinleyerek bilgi toplar:
+/rc/input
+/robot/gnss
+/user/command
+Şu Topiclerle robotu yönetir:
+/robot/relay
+/robot/steer
+/robot/hub_motor
+"""
+
+
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter import Parameter
 from robot_interfaces.msg import (
     HubMotor,
     RcInput,
@@ -17,45 +30,53 @@ class CoreNode(Node):
     def __init__(self) -> None:
         super().__init__("core_node", automatically_declare_parameters_from_overrides=True,)
 
-        self.throttle_max = float(_get_param(self, "throttle_deadzone", 80.0))
-        self.throttle_deadzone = float(_get_param(self, "throttle_deadzone", 5.0))
-        self.update_hz = int(_get_param(self, "update_hz", 10))
-        buzzer_gpio_pin = int(_get_param(self, "buzzer_pin", 18))
-        led_gpio_pin = int(_get_param(self, "led_pin", 23))
+        self.steering_center = float(_get_param("steering_center", 0.0))
+        self.steering_input_max = float(_get_param("steering_input_max", 100.0))
+        self.steering_deadband = float(_get_param("steering_deadband", 5.0))
+        self.max_steer_angle = float(_get_param("max_steer_angle", 70.0))
+        self.throttle_center = float(_get_param(self, "throttle_center", 0.0))
+        self.throttle_input_max = float(_get_param(self, "throttle_input_max", 100.0))
+        self.throttle_deadband = float(_get_param(self, "throttle_deadband", 5.0))
+        self.update_hz = int(_get_param(self, "update_hz", 10))        
+        self.topic_rc_input = str(_get_param("topic_rc_input", "/rc/input"))
+        self.topic_gnss = str(_get_param("topic_gnss", "/robot/gnss"))
+        self.topic_command = str(_get_param("topic_command", "/user/command"))        
+        self.topic_relay = str(_get_param("topic_relay", "/robot/relay"))
+        self.topic_steer = str(_get_param("topic_steer", "/robot/steer"))
+        self.topic_hub_motor = str(_get_param("topic_hub_motor", "/robot/hub_motor"))
 
-        self.buzzer = Buzzer(buzzer_gpio_pin)
-        self.led = Led(led_gpio_pin)
+        buzzer_gpio = int(_get_param(self, "buzzer_pin", 18))
+        led_gpio = int(_get_param(self, "led_pin", 23))
+        self.buzzer = Buzzer(buzzer_gpio)
+        self.led = Led(led_gpio)
 
         self.robot_state = RobotState.IDLE
-
-        self.relay_msg = RobotRelay()
-        self.steer_msg = Steer()
-        self.hubmotor_msg = HubMotor()
-
         self.rc_steer = 0
         self.last_armed = False
-        self.last_moving = False
         self.fault_active = False
 
         self.rc_subscription = self.create_subscription(
             RcInput,
-            "/rc/input",
+            self.topic_rc_input,
             self.rc_callback,
             10,
         )
+        self.command_subscription = self.create_subscription(
+            ...
+        )
         self.relay_publisher = self.create_publisher(
             RobotRelay,
-            "/robot/relay",
+            self.topic_relay,
             10,
         )
         self.steer_publisher = self.create_publisher(
             Steer,
-            "/robot/steer",
+            self.topic_steer,
             10,
         )
         self.hubmotor_publisher = self.create_publisher(
             HubMotor,
-            "/robot/hub_motor",
+            self.topic_hub_motor,
             10,
         )
 
@@ -78,7 +99,6 @@ class CoreNode(Node):
 
         self.buzzer.update()
         self.led.update(self.robot_state)
-
         
 
     def set_current_mode(self, mode: str) -> None:
@@ -88,6 +108,7 @@ class CoreNode(Node):
 
         self.current_mode = next_mode
         self.update_status_led()
+
 
     def update_status_led(self) -> None:
         if self.fault_active or self.current_mode == self.MODE_FAILSAFE:
@@ -115,52 +136,48 @@ class CoreNode(Node):
         self.last_armed = armed
         self.buzzer.set_armed(armed)
 
-    def handle_moving_buzzer(self, moving: bool) -> None:
-        if moving == self.last_moving:
-            return
-
-        self.last_moving = moving
-        self.buzzer.set_moving(moving)
 
     def publish_relay(self, rc_msg: RcInput, enabled: bool) -> None:
-        self.relay_msg.header.stamp = self.get_clock().now().to_msg()
+        relay_msg = RobotRelay()
+        relay_msg.header.stamp = self.get_clock().now().to_msg()
         if enabled:
-            self.relay_msg.ignition = rc_msg.ignition == 1
-            self.relay_msg.reverse = rc_msg.reverse == 2
-            self.relay_msg.brake = False
-            self.relay_msg.back_energy = False
-            self.relay_msg.alarm_lamp = self.relay_msg.ignition
+            relay_msg.ignition = rc_msg.ignition == 1
+            relay_msg.reverse = rc_msg.reverse == 2
+            relay_msg.brake = False
+            relay_msg.back_energy = False
+            relay_msg.alarm_lamp = relay_msg.ignition
         else:
-            self.relay_msg.ignition = False
-            self.relay_msg.reverse = False
-            self.relay_msg.brake = False
-            self.relay_msg.back_energy = False
-            self.relay_msg.alarm_lamp = False
-        self.relay_publisher.publish(self.relay_msg)
+            relay_msg.ignition = False
+            relay_msg.reverse = False
+            relay_msg.brake = False
+            relay_msg.back_energy = False
+            relay_msg.alarm_lamp = False
+        self.relay_publisher.publish(relay_msg)
 
     def publish_steer(self, rc_msg: RcInput, enabled: bool) -> None:
-        """
-        Publish a simple four-wheel steering target derived from RC input.
-        """
         self.rc_steer = rc_msg.steering
         self.rc_steer = int(self.clamp(-100, 100, rc_msg.steering))
 
+        steer_msg = Steer()
+
         if enabled:
-            self.steer_msg.header.stamp = self.get_clock().now().to_msg()
-            self.steer_msg.front_left_angle = self.rc_steer
-            self.steer_msg.front_right_angle = self.rc_steer
-            self.steer_msg.rear_left_angle = -self.rc_steer
-            self.steer_msg.rear_right_angle = -self.rc_steer
-            self.steer_msg.enable = True
-            self.steer_publisher.publish(self.steer_msg)
+            steer_msg.header.stamp = self.get_clock().now().to_msg()
+            steer_msg.front_left_angle = self.rc_steer
+            steer_msg.front_right_angle = self.rc_steer
+            steer_msg.rear_left_angle = -self.rc_steer
+            steer_msg.rear_right_angle = -self.rc_steer
+            steer_msg.enable = True
+            
         else:
-            self.steer_msg.header.stamp = self.get_clock().now().to_msg()
-            self.steer_msg.front_left_angle = 0
-            self.steer_msg.front_right_angle = 0
-            self.steer_msg.rear_left_angle = 0
-            self.steer_msg.rear_right_angle = 0
-            self.steer_msg.enable = False
-            self.steer_publisher.publish(self.steer_msg)
+            steer_msg.header.stamp = self.get_clock().now().to_msg()
+            steer_msg.front_left_angle = 0
+            steer_msg.front_right_angle = 0
+            steer_msg.rear_left_angle = 0
+            steer_msg.rear_right_angle = 0
+            steer_msg.enable = False
+
+        self.steer_publisher.publish(steer_msg)
+
 
     def publish_hubmotor(self, rc_msg: RcInput, enabled: bool) -> None:
         """
@@ -180,14 +197,15 @@ class CoreNode(Node):
 
         wheel_power = min(max(0, throttle_command), 100)
 
-        self.hubmotor_msg.header.stamp = self.get_clock().now().to_msg()
-        self.hubmotor_msg.front_left = wheel_power
-        self.hubmotor_msg.front_right = wheel_power
-        self.hubmotor_msg.rear_left = wheel_power
-        self.hubmotor_msg.rear_right = wheel_power
-        self.hubmotor_msg.enable = enabled
+        hubmotor_msg = HubMotor()
+        hubmotor_msg.header.stamp = self.get_clock().now().to_msg()
+        hubmotor_msg.front_left = wheel_power
+        hubmotor_msg.front_right = wheel_power
+        hubmotor_msg.rear_left = wheel_power
+        hubmotor_msg.rear_right = wheel_power
+        hubmotor_msg.enable = enabled
 
-        self.hubmotor_publisher.publish(self.hubmotor_msg)
+        self.hubmotor_publisher.publish(hubmotor_msg)
         self.handle_moving_buzzer(enabled and wheel_power > 0)
 
     def rc_throttle_to_command(self, throttle_value: float) -> int:
