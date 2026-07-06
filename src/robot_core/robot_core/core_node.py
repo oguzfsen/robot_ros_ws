@@ -15,8 +15,10 @@ core_node robot ros sisteminin yönetim merkezidir.
 import rclpy
 from rclpy.node import Node
 from robot_interfaces.msg import (
-    HubMotor,
     RcInput,
+    Command,
+    Gnss,
+    HubMotor,
     RobotRelay,
     Steer,
 )
@@ -62,7 +64,10 @@ class CoreNode(Node):
             10,
         )
         self.command_subscription = self.create_subscription(
-            ...
+            Command,
+            self.topic_command,
+            self.command_callback,
+            10
         )
         self.relay_publisher = self.create_publisher(
             RobotRelay,
@@ -99,7 +104,29 @@ class CoreNode(Node):
 
         self.buzzer.update()
         self.led.update(self.robot_state)
-        
+
+    def command_callback(self, msg:Command) -> None:
+        command_type = msg.command_type
+        payload = msg.payload
+
+        if command_type == "start_mission":
+            ...
+        if command_type == "pause_mission":
+            ...
+        if command_type == "stop_mission":
+            ...
+        if command_type == "return_home":
+            ...
+        if command_type == "start_spraying":
+            ...
+        if command_type == "stop_spraying":
+            ...
+        if command_type == "spraying_demo":
+            ...
+        if command_type == "emergency":
+            ...            
+
+
 
     def set_current_mode(self, mode: str) -> None:
         next_mode = str(mode).strip().lower()
