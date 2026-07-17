@@ -9,6 +9,32 @@ core_node robot ros sisteminin yönetim merkezidir.
 /robot/relay
 /robot/steer
 /robot/hub_motor
+
+kumanda ignition açılırsa robot_state = MANUAL
+    tüm kontrol kullanıcıya geçer.
+kumanda ignition kapatılırsa robot_state = IDLE
+    kontrolü otonom alabilir.
+
+görev komutları:
+    start_mission
+    start_spraying
+    stop_spraying
+    spraying_demo
+    Sadece robot_state = IDLE ise çalışır.
+
+    pause_mission
+    stop_mission
+    Sadece robot_state = MISSION ise çalışır.
+
+    return_home
+    robot_state = IDLE veya MISSION ise çalışır.
+
+    emergency
+    robot_state = IDLE veya MISSION ise çalışır.
+
+robot_state = EMERGENCY veya MALFUNCTION ise sadece uzaktan kumanda ile kontrol edilebilir. göreve başlamaz. eve dönmez...
+EMERGENCY bilinçli durdurmadır. MALFUNCTION ise robottaki bir sorun yüzünden kaynaklanır.
+
 """
 
 
@@ -26,6 +52,7 @@ from robot_interfaces.msg import (
 from robot_core.Buzzer import Buzzer
 from robot_core.Led import Led
 from robot_core.Tools import RobotState, _get_param
+from robot_core.Mission import Mission
 
 class CoreNode(Node):
 
@@ -57,6 +84,8 @@ class CoreNode(Node):
         self.last_armed = False
         self.fault_active = False
 
+        self.mission = None
+
         self.rc_subscription = self.create_subscription(
             RcInput,
             self.topic_rc_input,
@@ -67,6 +96,12 @@ class CoreNode(Node):
             Command,
             self.topic_command,
             self.command_callback,
+            10
+        )
+        self.gnss_subscription = self.create_subscription(
+            Gnss,
+            self.topic_gnss,
+            self.gnss_callback,
             10
         )
         self.relay_publisher = self.create_publisher(
@@ -91,26 +126,31 @@ class CoreNode(Node):
 
 
     def update(self) -> None:
+        if self.robot_state == RobotState.MISSION:
+            self.do_mission()
+
         self.buzzer.update()
         self.led.update(self.robot_state)
 
         
     def rc_callback(self, msg: RcInput) -> None:
-        self.arm_on = msg.connected and msg.ignition == 1
+        if msg.connected and msg.ignition == 1:
+            self.robot_state = RobotState.MANUAL
+            self.buzzer.arm_on()
 
         self.publish_relay(msg, enabled=self.arm_on)
         self.publish_steer(msg, enabled=self.arm_on)
         self.publish_hubmotor(msg, enabled=self.arm_on)
 
-        self.buzzer.update()
-        self.led.update(self.robot_state)
+
 
     def command_callback(self, msg:Command) -> None:
         command_type = msg.command_type
         payload = msg.payload
 
         if command_type == "start_mission":
-            ...
+            mission_id = int(payload)
+            self.start_mission(mission_id)
         if command_type == "pause_mission":
             ...
         if command_type == "stop_mission":
@@ -124,8 +164,14 @@ class CoreNode(Node):
         if command_type == "spraying_demo":
             ...
         if command_type == "emergency":
-            ...            
+            self.robot_state = RobotState.EMERGENCY
 
+
+    def start_mission(self, mission_id: int) -> None:
+        ...
+
+    def gnss_callback(self, msg:Gnss) -> None:
+        ...
 
 
     def set_current_mode(self, mode: str) -> None:
