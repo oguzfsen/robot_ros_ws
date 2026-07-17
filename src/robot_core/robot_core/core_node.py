@@ -32,20 +32,20 @@ class CoreNode(Node):
     def __init__(self) -> None:
         super().__init__("core_node", automatically_declare_parameters_from_overrides=True,)
 
-        self.steering_center = float(_get_param("steering_center", 0.0))
-        self.steering_input_max = float(_get_param("steering_input_max", 100.0))
-        self.steering_deadband = float(_get_param("steering_deadband", 5.0))
-        self.max_steer_angle = float(_get_param("max_steer_angle", 70.0))
+        self.steering_center = float(_get_param(self, "steering_center", 0.0))
+        self.steering_input_max = float(_get_param(self, "steering_input_max", 100.0))
+        self.steering_deadband = float(_get_param(self, "steering_deadband", 5.0))
+        self.max_steer_angle = float(_get_param(self, "max_steer_angle", 70.0))
         self.throttle_center = float(_get_param(self, "throttle_center", 0.0))
         self.throttle_input_max = float(_get_param(self, "throttle_input_max", 100.0))
         self.throttle_deadband = float(_get_param(self, "throttle_deadband", 5.0))
         self.update_hz = int(_get_param(self, "update_hz", 10))        
-        self.topic_rc_input = str(_get_param("topic_rc_input", "/rc/input"))
-        self.topic_gnss = str(_get_param("topic_gnss", "/robot/gnss"))
-        self.topic_command = str(_get_param("topic_command", "/user/command"))        
-        self.topic_relay = str(_get_param("topic_relay", "/robot/relay"))
-        self.topic_steer = str(_get_param("topic_steer", "/robot/steer"))
-        self.topic_hub_motor = str(_get_param("topic_hub_motor", "/robot/hub_motor"))
+        self.topic_rc_input = str(_get_param(self, "topic_rc_input", "/rc/input"))
+        self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
+        self.topic_command = str(_get_param(self, "topic_command", "/user/command"))        
+        self.topic_relay = str(_get_param(self, "topic_relay", "/robot/relay"))
+        self.topic_steer = str(_get_param(self, "topic_steer", "/robot/steer"))
+        self.topic_hub_motor = str(_get_param(self, "topic_hub_motor", "/robot/hub_motor"))
 
         buzzer_gpio = int(_get_param(self, "buzzer_pin", 18))
         led_gpio = int(_get_param(self, "led_pin", 23))
@@ -98,9 +98,9 @@ class CoreNode(Node):
     def rc_callback(self, msg: RcInput) -> None:
         self.arm_on = msg.connected and msg.ignition == 1
 
-        self.publish_relay(msg, enabled=False)
-        self.publish_steer(msg, enabled=False)
-        self.publish_hubmotor(msg, enabled=False)
+        self.publish_relay(msg, enabled=self.arm_on)
+        self.publish_steer(msg, enabled=self.arm_on)
+        self.publish_hubmotor(msg, enabled=self.arm_on)
 
         self.buzzer.update()
         self.led.update(self.robot_state)
@@ -214,7 +214,7 @@ class CoreNode(Node):
         Direction is handled elsewhere.
         """
         throttle_command = 0
-        if rc_msg.throttle > self.throttle_deadzone:
+        if rc_msg.throttle > self.throttle_deadband:
             throttle_command = rc_msg.throttle
 
         if enabled:
@@ -233,7 +233,7 @@ class CoreNode(Node):
         hubmotor_msg.enable = enabled
 
         self.hubmotor_publisher.publish(hubmotor_msg)
-        self.handle_moving_buzzer(enabled and wheel_power > 0)
+        
 
     def rc_throttle_to_command(self, throttle_value: float) -> int:
         """

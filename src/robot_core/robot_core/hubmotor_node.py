@@ -30,7 +30,7 @@ class HubMotorNode(Node):
         super().__init__("hubmotor_node", automatically_declare_parameters_from_overrides=True)
 
         self.topic_name = str(_get_param(self, "topic", "/robot/hub_motor"))
-        self.device_name = str(_get_param("device_name", "mcp4725"))
+        self.device_name = str(_get_param(self, "device_name", "mcp4725"))
         self.bus_id = int(_get_param(self, "bus_id", 1))
         self.use_mux = bool(_get_param(self, "use_mux", True))
         self.mux_address = int(_get_param(self, "mux_address", 113))

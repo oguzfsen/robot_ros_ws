@@ -35,17 +35,17 @@ class SteerNode(Node):
         self.drive_pulse_4 = int(_get_param(self, "drive_pulse_4", 3000))
         self.fake_pid = int(_get_param(self, "fake_pid", 10.0))
 
-        self.front_left_forward_pin = int(_get_param("front_left_forward_pin", 5))
-        self.front_right_forward_pin = int(_get_param("front_right_forward_pin", 1))
-        self.rear_left_forward_pin = int(_get_param("rear_left_forward_pin", 7))
-        self.rear_right_forward_pin = int(_get_param("rear_right_forward_pin", 3))
-        self.front_left_reverse_pin = int(_get_param("front_left_reverse_pin", 4))
-        self.front_right_reverse_pin = int(_get_param("front_right_reverse_pin", 0))
-        self.rear_left_reverse_pin = int(_get_param("rear_left_reverse_pin", 6))
-        self.rear_right_reverse_pin = int(_get_param("rear_right_reverse_pin", 2))
-        self.database_listen_client = str(_get_param("database_listen_client", "/database/encoder_zero_get"))
-        self.encoder_listen_topic = str(_get_param("encoder_listen_topic", "/robot/steering_encoders"))
-        self.core_listen_topic = str(_get_param("core_listen_topic", "/robot/steer"))
+        self.front_left_forward_pin = int(_get_param(self, "front_left_forward_pin", 5))
+        self.front_right_forward_pin = int(_get_param(self, "front_right_forward_pin", 1))
+        self.rear_left_forward_pin = int(_get_param(self, "rear_left_forward_pin", 7))
+        self.rear_right_forward_pin = int(_get_param(self, "rear_right_forward_pin", 3))
+        self.front_left_reverse_pin = int(_get_param(self, "front_left_reverse_pin", 4))
+        self.front_right_reverse_pin = int(_get_param(self, "front_right_reverse_pin", 0))
+        self.rear_left_reverse_pin = int(_get_param(self, "rear_left_reverse_pin", 6))
+        self.rear_right_reverse_pin = int(_get_param(self, "rear_right_reverse_pin", 2))
+        self.database_listen_client = str(_get_param(self, "database_listen_client", "/database/encoder_zero_get"))
+        self.encoder_listen_topic = str(_get_param(self, "encoder_listen_topic", "/robot/steering_encoders"))
+        self.core_listen_topic = str(_get_param(self, "core_listen_topic", "/robot/steer"))
 
         self.drive_pulses = [
             self.drive_pulse_1,

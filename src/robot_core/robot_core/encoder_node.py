@@ -43,8 +43,14 @@ class EncoderNode(Node):
         timer_period = 1.0 / self.frequency
         self.timer = self.create_timer(timer_period, self.timer_callback)
 
+        self.publish_timer = self.create_timer(2, self.publish_encoder_values)
+        self.publish_waiting = False
+
         self.get_logger().info("encoder_node started")
 
+    def publish_encoder_values(self) -> None:
+        self.publish_waiting = True
+        
     
     def _wait_for_service(self, client) -> None:
         while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
@@ -103,6 +109,10 @@ class EncoderNode(Node):
             msg = Int32MultiArray()
             msg.data = self.pending_values
             self.publisher.publish(msg)
+
+            if self.publish_waiting:
+                self.get_logger().info(str(self.pending_values))
+                self.publish_waiting = False
 
             self.pending_values = []
             self.current_mux_channel = None
