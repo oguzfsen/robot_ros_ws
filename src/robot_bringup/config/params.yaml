@@ -153,3 +153,11 @@ telemetry_node:
     rtcm_topic: /station/rtcm
     status_topic: /robot/status
     command_topic: /user/command
+
+brake_node:
+  ros__parameters:
+    serial_port: /dev/ttyUSB1
+    baudrate: 115200
+    frequency: 10
+    min_pos: 900
+    max_pos: 1150

@@ -16,6 +16,7 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/Brake.msg"
   "msg/Command.msg"
   "msg/Compass.msg"
   "msg/Gnss.msg"

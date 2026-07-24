@@ -1,0 +1,132 @@
+BrakeV2 Manual
+================
+
+1. Genel amaç
+Bu proje, Arduino Uno klon kart üzerinde çalışan bir fren aktüatör kontrol yazılımıdır.
+Arduino:
+- D8 ve D9 ile DC motor sürücüsünü kontrol eder.
+- D2 üzerinden lineer aktüatörün H1 hall sensörünü sayar.
+- HOME noktasını tam açık konum, yani POSITION=0 kabul eder.
+- Maksimum çekme noktasını EEPROM'da saklar ve bu sınırın üstüne yazılımsal olarak çıkmaz.
+
+2. Pin bağlantıları
+- Hall sensörü H1: D2
+- Motor sürücü HOME yönü komutu: D8
+- Motor sürücü MAX yönü komutu: D9
+
+Not:
+- Eğer motor ters yönde gidiyorsa [src/main.cpp](/home/oguz/Documents/PlatformIO/Projects/BrakeV2/src/main.cpp:13) içindeki `kDriveTowardHomePin` ve `kDriveTowardMaximumPin` sabitlerini yer değiştir.
+- Bu doğrulama ilk güç verildiğinde mutlaka yapılmalı. Reset sonrası aktüatör HOME yönüne gitmelidir.
+
+3. Seri haberleşme
+- Baud rate: 115200
+- Format: 8N1
+- Satır sonu: `LF` yeterli, `CRLF` de kabul edilir
+
+Desteklenen komutlar:
+- `WHO`
+  Cevap: `BRAKE_UNO`
+- `STATUS`
+  Cevap örneği: `MODE=AUTO POSITION=65 MAX=350 BRAKE=OFF`
+- `SETMAX 300`
+  Etki: Değeri EEPROM'a kaydeder, HOME'a gider, sıfırlar, sonra 300 pulse noktasına gider.
+  Cevap: `MAX=300`
+- `MOVE 55`
+  Etki: Mevcut pozisyon bilgisini kullanarak doğrudan 55 pulse noktasına gider.
+  Cevap: `MOVING 55`
+- `RELEASE`
+  Etki: HOME'a gider ve orada kalır.
+  Cevap: `RELEASING`
+- `BRAKE`
+  Etki: HOME'a uğramadan hemen kayıtlı MAX noktasına gider.
+  Cevap: `BRAKING`
+- `PING`
+  Etki: Cevap üretmez. AUTO modunu aktif tutar.
+
+Hata formatı:
+- Her hata `FAULT ...` formatındadır.
+- Örnekler: `FAULT MAX_NOT_CONFIGURED`, `FAULT INVALID_MOVE`, `FAULT MOTION_STALLED`
+
+4. Modlar ve çalışma mantığı
+MODE=MANUAL:
+- `SETMAX`, `MOVE`, `RELEASE`, `BRAKE` komutlarıyla girilir.
+- Pozisyon hedefi doğrudan komutla belirlenir.
+
+MODE=AUTO:
+- İlk `PING` geldiğinde AUTO moda geçilir.
+- `PING` 200 ms içinde gelmeye devam ediyorsa hedef HOME'tur.
+- `PING` 200 ms boyunca kesilirse hedef kayıtlı MAX noktası olur.
+- `PING` tekrar gelirse aktüatör yeniden HOME'a döner.
+
+5. Reset ve başlangıç davranışı
+- Her reset sonrası kart hemen HOME yönüne gitmeye başlar.
+- HOME, HOME yönünde giderken hall pulse'larının bir süre kesilmesiyle tespit edilir.
+- HOME bulunduğunda POSITION sıfırlanır.
+- Ardından AUTO mantığı değerlendirilir:
+  - Son 200 ms içinde `PING` varsa HOME'ta kalır.
+  - `PING` yoksa kayıtlı MAX'a gitmeye çalışır.
+  - EEPROM'da geçerli MAX yoksa `FAULT MAX_NOT_CONFIGURED` gönderir ve HOME'ta kalır.
+
+6. Pozisyon bilgisi
+- POSITION değeri H1 pulse sayısıdır.
+- HOME görüldüğü her seferde POSITION tekrar `0` yapılır.
+- Bu sayede uzun kullanımda pulse drift birikimi azaltılır.
+
+7. EEPROM bilgisi
+- MAX değeri magic korumalı bir yapı ile EEPROM'da tutulur.
+- Magic değeri: `BRK2`
+- Geçersiz veya boş EEPROM durumunda sistem MAX'i tanımsız kabul eder.
+- Bu durumda `BRAKE` ve `MOVE` için önce `SETMAX` yapılmalıdır.
+
+8. Güvenlik notları
+- Yazılım içindeki mutlak pulse üst sınırı `1400` olarak tanımlıdır.
+- Eğer gerçek mekanik strok ölçümünde bu değer anlamlı biçimde farklıysa [src/main.cpp](/home/oguz/Documents/PlatformIO/Projects/BrakeV2/src/main.cpp:17) içindeki `kAbsolutePulseLimit` güncellenmelidir.
+- HOME algısı dahili end switch ve hall durmasına dayanır; bu yüzden HOME yönü pinleri yanlış tanımlanırsa sistem ters uca gidip yanlış referans alabilir.
+- İlk kurulumda mutlaka düşük riskli bir mekanik durumda test edilmelidir.
+
+9. ROS / Raspberry Pi entegrasyonu
+ROS tarafı için önerilen davranış:
+- Seri portu 115200 baud ile aç.
+- Başlangıçta `WHO` gönder ve `BRAKE_UNO` cevabını doğrula.
+- Sonra `STATUS` ile mevcut modu ve `MAX` değerini oku.
+- Eğer `MAX=0` geliyorsa ya da `FAULT MAX_NOT_CONFIGURED` görüldüyse kalibrasyon yapılmadan frenleme komutu verme.
+- AUTO kullanımında 10 Hz, yani yaklaşık her 100 ms'de bir `PING\n` gönder.
+- Güvenlik için host tarafında 100 ms periyotlu timer kullanmak iyi olur.
+- `FAULT ...` mesajlarını asenkron olay olarak dinle. Bunlar herhangi bir anda gelebilir.
+
+ROS tarafı için pratik durum modeli:
+- `released`: HOME veya HOME'a gidiyor
+- `braking`: MAX'a gidiyor
+- `manual`: son komut `MOVE`, `SETMAX`, `RELEASE`, `BRAKE`
+- `auto`: son kontrol kaynağı `PING`
+- `fault`: seri hatta `FAULT ...` görüldü
+
+Önerilen host açılış sırası:
+1. Portu aç.
+2. Kart reset olacağı için yaklaşık 1-2 saniye bekle.
+3. `WHO` gönder.
+4. `STATUS` gönder.
+5. Gerekirse `SETMAX n` ile kalibrasyon yap.
+6. AUTO kullanılacaksa düzenli `PING` akışını başlat.
+
+10. Kalibrasyon önerisi
+İlk kurulumda:
+1. Aktüatörün HOME yönünün doğru olduğunu doğrula.
+2. Uygun güvenli pulse değerini belirle.
+3. `SETMAX <deger>` gönder.
+4. Aktüatör HOME'a gidip sıfırladıktan sonra verilen pulse noktasına ilerler.
+5. Gerekirse daha güvenli bir değerle tekrar `SETMAX` yap.
+
+11. Yükleme ve servis notu
+Bu makinede 23 Temmuz 2026 tarihinde derleme ve canlı seri test yapılmıştır.
+Doğrulanan komut cevapları:
+- `WHO` -> `BRAKE_UNO`
+- `STATUS` -> `MODE=AUTO POSITION=0 MAX=0 BRAKE=OFF`
+
+Standart `platformio run -t upload` denemesi bootloader senkron hatası verdi.
+Başarılı yükleme, `/dev/ttyUSB0` portunda kısa DTR reset tetiklenip ardından `avrdude` ile yapıldı.
+Gelecekte benzer durumda aynı yaklaşım denenebilir.
+
+12. Kaynak dosyalar
+- Ana kontrol kodu: [src/main.cpp](/home/oguz/Documents/PlatformIO/Projects/BrakeV2/src/main.cpp:1)
+- PlatformIO ayarı: [platformio.ini](/home/oguz/Documents/PlatformIO/Projects/BrakeV2/platformio.ini:1)

@@ -37,7 +37,7 @@ EMERGENCY bilinçli durdurmadır. MALFUNCTION ise robottaki bir sorun yüzünden
 
 """
 
-
+import time
 import rclpy
 from rclpy.node import Node
 from robot_interfaces.msg import (
@@ -47,6 +47,7 @@ from robot_interfaces.msg import (
     HubMotor,
     RobotRelay,
     Steer,
+    Brake
 )
 
 from robot_core.Buzzer import Buzzer
@@ -73,6 +74,8 @@ class CoreNode(Node):
         self.topic_relay = str(_get_param(self, "topic_relay", "/robot/relay"))
         self.topic_steer = str(_get_param(self, "topic_steer", "/robot/steer"))
         self.topic_hub_motor = str(_get_param(self, "topic_hub_motor", "/robot/hub_motor"))
+        self.topic_brake = str(_get_param(self, "topic_brake", "/robot/brake"))
+        
 
         buzzer_gpio = int(_get_param(self, "buzzer_pin", 18))
         led_gpio = int(_get_param(self, "led_pin", 23))
@@ -80,8 +83,10 @@ class CoreNode(Node):
         self.led = Led(led_gpio)
 
         self.robot_state = RobotState.IDLE
+        self.arm_on = False
+        self.brake = True
         self.rc_steer = 0
-        self.last_armed = False
+        self.rc_throttle = 0
         self.fault_active = False
 
         self.mission = None
@@ -119,6 +124,11 @@ class CoreNode(Node):
             self.topic_hub_motor,
             10,
         )
+        self.brake_publisher = self.create_publisher(
+            Brake,
+            self.topic_brake,
+            10,
+        )
 
         self.create_timer(self.update_hz, self.update)
 
@@ -137,6 +147,11 @@ class CoreNode(Node):
         if msg.connected and msg.ignition == 1:
             self.robot_state = RobotState.MANUAL
             self.buzzer.arm_on()
+            self.arm_on = True
+        else:
+            self.robot_state = RobotState.IDLE
+            self.buzzer.idle()
+            self.arm_on = False
 
         self.publish_relay(msg, enabled=self.arm_on)
         self.publish_steer(msg, enabled=self.arm_on)
@@ -174,15 +189,6 @@ class CoreNode(Node):
         ...
 
 
-    def set_current_mode(self, mode: str) -> None:
-        next_mode = str(mode).strip().lower()
-        if next_mode == self.current_mode:
-            return
-
-        self.current_mode = next_mode
-        self.update_status_led()
-
-
     def update_status_led(self) -> None:
         if self.fault_active or self.current_mode == self.MODE_FAILSAFE:
             self.led.set_mode(Led.MODE_FAILSAFE)
@@ -201,13 +207,6 @@ class CoreNode(Node):
             return
 
         self.led.set_mode(Led.MODE_IDLE)
-
-    def handle_arm_buzzer(self, armed: bool) -> None:
-        if armed == self.last_armed:
-            return
-
-        self.last_armed = armed
-        self.buzzer.set_armed(armed)
 
 
     def publish_relay(self, rc_msg: RcInput, enabled: bool) -> None:
@@ -232,17 +231,16 @@ class CoreNode(Node):
         self.rc_steer = int(self.clamp(-100, 100, rc_msg.steering))
 
         steer_msg = Steer()
+        steer_msg.header.stamp = self.get_clock().now().to_msg()
 
         if enabled:
-            steer_msg.header.stamp = self.get_clock().now().to_msg()
-            steer_msg.front_left_angle = self.rc_steer
-            steer_msg.front_right_angle = self.rc_steer
-            steer_msg.rear_left_angle = -self.rc_steer
-            steer_msg.rear_right_angle = -self.rc_steer
+            steer_msg.front_left_angle = -self.rc_steer
+            steer_msg.front_right_angle = -self.rc_steer
+            steer_msg.rear_left_angle = self.rc_steer
+            steer_msg.rear_right_angle = self.rc_steer
             steer_msg.enable = True
             
         else:
-            steer_msg.header.stamp = self.get_clock().now().to_msg()
             steer_msg.front_left_angle = 0
             steer_msg.front_right_angle = 0
             steer_msg.rear_left_angle = 0
@@ -253,52 +251,42 @@ class CoreNode(Node):
 
 
     def publish_hubmotor(self, rc_msg: RcInput, enabled: bool) -> None:
-        """
-        Publish a simple four-wheel hub motor power command from RC throttle.
 
-        The hub motor message carries power magnitude.
-        Direction is handled elsewhere.
-        """
-        throttle_command = 0
         if rc_msg.throttle > self.throttle_deadband:
-            throttle_command = rc_msg.throttle
-
-        if enabled:
-            throttle_command = self.rc_throttle_to_command(
-                float(rc_msg.throttle)
-            )
-
-        wheel_power = min(max(0, throttle_command), 100)
+            self.rc_throttle = self.clamp(0, 100, rc_msg.throttle)
+        else:
+            self.rc_throttle = 0
 
         hubmotor_msg = HubMotor()
         hubmotor_msg.header.stamp = self.get_clock().now().to_msg()
-        hubmotor_msg.front_left = wheel_power
-        hubmotor_msg.front_right = wheel_power
-        hubmotor_msg.rear_left = wheel_power
-        hubmotor_msg.rear_right = wheel_power
         hubmotor_msg.enable = enabled
+        
+        if enabled:
+            hubmotor_msg.front_left = self.rc_throttle
+            hubmotor_msg.front_right = self.rc_throttle
+            hubmotor_msg.rear_left = self.rc_throttle
+            hubmotor_msg.rear_right = self.rc_throttle
+
+        else:
+            hubmotor_msg.front_left = 0
+            hubmotor_msg.front_right = 0
+            hubmotor_msg.rear_left = 0
+            hubmotor_msg.rear_right = 0
+
 
         self.hubmotor_publisher.publish(hubmotor_msg)
+
+        brake_msg = Brake()
+        brake_msg.header.stamp = self.get_clock().now().to_msg()
         
 
-    def rc_throttle_to_command(self, throttle_value: float) -> int:
-        """
-        Convert RC throttle input to a signed percentage command.
-        """
-        centered_value = throttle_value - self.throttle_center
+        if enabled & self.rc_throttle > 0:
+            self.brake = False
+        else:
+            self.brake = True
+        brake_msg.activate = self.brake
+        self.brake_publisher.publish(brake_msg)
 
-        if abs(centered_value) <= self.throttle_deadband:
-            return 0
-
-        if self.throttle_input_max <= 0.0:
-            return 0
-
-        limited = max(
-            -self.throttle_input_max,
-            min(self.throttle_input_max, centered_value),
-        )
-        return int(round((limited / self.throttle_input_max) * 100.0))
-    
 
     def clamp(self, min_val, max_val, value) -> int:
         """Clamp a value as int"""
