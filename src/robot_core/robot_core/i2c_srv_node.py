@@ -10,6 +10,7 @@ accessing the target device.
 
 import os
 import threading
+import time
 from typing import List
 
 import rclpy
@@ -40,6 +41,9 @@ class I2CSrvNode(Node):
 
         self.default_bus_path = "/dev/i2c-1"
         self.bus_lock = threading.Lock()
+        self.retry_count = 3
+        self.retry_delay_s = 0.02
+        self.mux_settle_delay_s = 0.002
 
         if not os.path.exists(self.default_bus_path):
             self.get_logger().error(
@@ -76,31 +80,7 @@ class I2CSrvNode(Node):
             self.validate_request(request)
 
             with self.bus_lock:
-                with SMBus(request.bus_id) as bus:
-
-                    if request.use_mux:
-                        self.select_mux_channel(
-                            bus=bus,
-                            mux_address=request.mux_address,
-                            mux_channel=request.mux_channel
-                        )
-
-                    if request.read_length == 0:
-                        self.write_data(
-                            bus=bus,
-                            device_address=request.device_address,
-                            register_address=request.register_address,
-                            payload=list(request.payload)
-                        )
-                        response.data = []
-
-                    else:
-                        response.data = self.read_data(
-                            bus=bus,
-                            device_address=request.device_address,
-                            register_address=request.register_address,
-                            read_length=request.read_length
-                        )
+                response.data = self.execute_with_retry(request)
 
             response.success = True
             response.error = ""
@@ -117,6 +97,53 @@ class I2CSrvNode(Node):
             )
 
         return response
+
+    def execute_with_retry(self, request: I2COperation.Request) -> List[int]:
+        """
+        Execute one I2C transaction with a few retries for transient bus errors.
+        """
+        last_exception = None
+
+        for attempt in range(1, self.retry_count + 1):
+            try:
+                with SMBus(request.bus_id) as bus:
+                    if request.use_mux:
+                        self.select_mux_channel(
+                            bus=bus,
+                            mux_address=request.mux_address,
+                            mux_channel=request.mux_channel
+                        )
+                        time.sleep(self.mux_settle_delay_s)
+
+                    if request.read_length == 0:
+                        self.write_data(
+                            bus=bus,
+                            device_address=request.device_address,
+                            register_address=request.register_address,
+                            payload=list(request.payload)
+                        )
+                        return []
+
+                    return self.read_data(
+                        bus=bus,
+                        device_address=request.device_address,
+                        register_address=request.register_address,
+                        read_length=request.read_length
+                    )
+
+            except Exception as ex:
+                last_exception = ex
+
+                if not self.is_retryable_i2c_error(ex) or attempt >= self.retry_count:
+                    raise
+
+                device_name = request.device_name if request.device_name else "unknown_device"
+                self.get_logger().warn(
+                    f"I2C retry {attempt}/{self.retry_count - 1} for {device_name}: {ex}"
+                )
+                time.sleep(self.retry_delay_s)
+
+        raise last_exception
 
     def validate_request(self, request: I2COperation.Request) -> None:
         """
@@ -153,6 +180,21 @@ class I2CSrvNode(Node):
         """
         channel_mask = 1 << mux_channel
         bus.write_byte(mux_address, channel_mask)
+
+    def is_retryable_i2c_error(self, ex: Exception) -> bool:
+        """
+        Return True for transient I2C errors that often recover on retry.
+        """
+        message = str(ex).lower()
+
+        if "remote i/o error" in message:
+            return True
+        if "errno 121" in message:
+            return True
+        if "errno 5" in message:
+            return True
+
+        return False
 
     def read_data(
         self,

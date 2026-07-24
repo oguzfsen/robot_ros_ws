@@ -22,7 +22,7 @@ class RCNode(Node):
     def __init__(self) -> None:
         super().__init__("rc_node", automatically_declare_parameters_from_overrides=True)
 
-        self.serial_port = str(_get_param(self, "serial_port", "/dev/ttyUSB0"))
+        self.serial_port = str(_get_param(self, "serial_port", "/dev/ttyUSB1"))
         self.serial_baud = int(_get_param(self, "serial_baud", 115200))        
         self.serial_timeout = float(_get_param(self, "serial_timeout", 0.5))        
         self.read_hz = float(_get_param(self, "read_hz", 10.0))

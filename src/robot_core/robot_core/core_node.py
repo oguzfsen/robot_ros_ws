@@ -37,7 +37,6 @@ EMERGENCY bilinçli durdurmadır. MALFUNCTION ise robottaki bir sorun yüzünden
 
 """
 
-import time
 import rclpy
 from rclpy.node import Node
 from robot_interfaces.msg import (
@@ -60,14 +59,13 @@ class CoreNode(Node):
     def __init__(self) -> None:
         super().__init__("core_node", automatically_declare_parameters_from_overrides=True,)
 
-        self.steering_center = float(_get_param(self, "steering_center", 0.0))
-        self.steering_input_max = float(_get_param(self, "steering_input_max", 100.0))
-        self.steering_deadband = float(_get_param(self, "steering_deadband", 5.0))
-        self.max_steer_angle = float(_get_param(self, "max_steer_angle", 70.0))
-        self.throttle_center = float(_get_param(self, "throttle_center", 0.0))
-        self.throttle_input_max = float(_get_param(self, "throttle_input_max", 100.0))
-        self.throttle_deadband = float(_get_param(self, "throttle_deadband", 5.0))
-        self.update_hz = int(_get_param(self, "update_hz", 10))        
+        self.steer_input_deadband = int(_get_param(self, "steer_input_deadband", 5))
+        self.steer_input_max = int(_get_param(self, "steer_input_max", 100))
+        self.steer_max = int(_get_param(self, "steer_max", 60))
+        self.throttle_deadband = int(_get_param(self, "throttle_deadband", 10))
+        self.throttle_input_max = int(_get_param(self, "throttle_input_max", 100))
+        self.throttle_max = int(_get_param(self, "throttle_max", 60))
+
         self.topic_rc_input = str(_get_param(self, "topic_rc_input", "/rc/input"))
         self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
         self.topic_command = str(_get_param(self, "topic_command", "/user/command"))        
@@ -76,15 +74,17 @@ class CoreNode(Node):
         self.topic_hub_motor = str(_get_param(self, "topic_hub_motor", "/robot/hub_motor"))
         self.topic_brake = str(_get_param(self, "topic_brake", "/robot/brake"))
         
-
+        self.update_hz = int(_get_param(self, "update_hz", 10))        
         buzzer_gpio = int(_get_param(self, "buzzer_pin", 18))
         led_gpio = int(_get_param(self, "led_pin", 23))
+
         self.buzzer = Buzzer(buzzer_gpio)
         self.led = Led(led_gpio)
 
         self.robot_state = RobotState.IDLE
         self.arm_on = False
         self.brake = True
+        self.brake_release_time = self.get_clock().now()
         self.rc_steer = 0
         self.rc_throttle = 0
         self.fault_active = False
@@ -130,7 +130,7 @@ class CoreNode(Node):
             10,
         )
 
-        self.create_timer(self.update_hz, self.update)
+        self.create_timer(1.0/self.update_hz, self.update)
 
         self.get_logger().info("Robot Core up and running.")
 
@@ -144,6 +144,9 @@ class CoreNode(Node):
 
         
     def rc_callback(self, msg: RcInput) -> None:
+        msg.throttle = self.clamp(0, self.throttle_input_max, msg.throttle)
+        msg.steering = self.clamp(-self.steer_input_max, self.steer_input_max, msg.steering)
+
         if msg.connected and msg.ignition == 1:
             self.robot_state = RobotState.MANUAL
             self.buzzer.arm_on()
@@ -228,7 +231,7 @@ class CoreNode(Node):
 
     def publish_steer(self, rc_msg: RcInput, enabled: bool) -> None:
         self.rc_steer = rc_msg.steering
-        self.rc_steer = int(self.clamp(-100, 100, rc_msg.steering))
+        self.rc_steer = self.clamp(-self.steer_max, self.steer_max, rc_msg.steering)
 
         steer_msg = Steer()
         steer_msg.header.stamp = self.get_clock().now().to_msg()
@@ -251,11 +254,28 @@ class CoreNode(Node):
 
 
     def publish_hubmotor(self, rc_msg: RcInput, enabled: bool) -> None:
-
         if rc_msg.throttle > self.throttle_deadband:
-            self.rc_throttle = self.clamp(0, 100, rc_msg.throttle)
+            requested_throttle = self.clamp(0, self.throttle_max, rc_msg.throttle)
         else:
+            requested_throttle = 0
+
+        release_brake = enabled and requested_throttle > 0
+        now = self.get_clock().now()
+
+        # Brake release is commanded immediately, motor power starts 1 second later.
+        if release_brake:
+            if self.brake:
+                self.brake_release_time = now
+            self.brake = False
+
+            if (now - self.brake_release_time).nanoseconds >= 1_000_000_000:
+                self.rc_throttle = requested_throttle
+            else:
+                self.rc_throttle = 0
+        else:
+            self.brake = True
             self.rc_throttle = 0
+            self.brake_release_time = now
 
         hubmotor_msg = HubMotor()
         hubmotor_msg.header.stamp = self.get_clock().now().to_msg()
@@ -278,12 +298,6 @@ class CoreNode(Node):
 
         brake_msg = Brake()
         brake_msg.header.stamp = self.get_clock().now().to_msg()
-        
-
-        if enabled & self.rc_throttle > 0:
-            self.brake = False
-        else:
-            self.brake = True
         brake_msg.activate = self.brake
         self.brake_publisher.publish(brake_msg)
 

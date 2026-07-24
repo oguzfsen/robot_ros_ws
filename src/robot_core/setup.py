@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            "brake_node = robot_core.brake_node:main",
             "compass_node = robot_core.compass_node:main",
             "core_node = robot_core.core_node:main",
             "database_node = robot_core.database_node:main",
@@ -36,6 +37,7 @@ setup(
             "steer_node = robot_core.steer_node:main",
             "steer_zero_node = robot_core.steer_zero_node:main",
             "telemetry_node = robot_core.telemetry_node:main",
+            
             "compass_listener_node = robot_core.listeners.compass_listener_node:main"
             "encoder_listener_node = robot_core.listeners.encoder_listener_node:main",
             "rc_listener_node = robot_core.listeners.rc_listener_node:main",

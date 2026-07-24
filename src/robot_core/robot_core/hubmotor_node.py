@@ -40,10 +40,14 @@ class HubMotorNode(Node):
         self.max_dac_value = int(_get_param(self, "max_dac_value", 4095))
         self.max_power_percentage = int(_get_param(self, "max_power_percentage", 100))
         self.control_frequency = float(_get_param(self, "control_frequency", 1.0))
+        self.command_timeout_sec = float(_get_param(self, "command_timeout_sec", 0.5))
+        self.watchdog_frequency = float(_get_param(self, "watchdog_frequency", 10.0))
 
         self.min_dac_value = self.clamp(0, 4095, self.min_dac_value)
         self.max_dac_value = self.clamp(self.min_dac_value, 4095, self.max_dac_value)
         self.max_power_percentage = self.clamp(0, 100, self.max_power_percentage)
+        self.command_timeout_sec = max(0.1, self.command_timeout_sec)
+        self.watchdog_frequency = max(1.0, self.watchdog_frequency)
 
         self.motor_order = [
             "front_left",
@@ -79,6 +83,8 @@ class HubMotorNode(Node):
         self.pending_i2c_future = None
         self.active_motor_name = None
         self.active_dac_value = None
+        self.last_command_time = time.monotonic()
+        self.watchdog_logged = False
 
         self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
         self._wait_for_service(self.i2c_client)
@@ -93,6 +99,7 @@ class HubMotorNode(Node):
             10
         )
         self.control_timer = self.create_timer(1.0 / self.control_frequency, self.control_callback)
+        self.watchdog_timer = self.create_timer(1.0 / self.watchdog_frequency, self.watchdog_callback)
 
         self.get_logger().info("hubmotor_node started")
 
@@ -100,6 +107,8 @@ class HubMotorNode(Node):
 #region Power Management
     def hubmotor_callback(self, msg: HubMotor) -> None:
         """Store the latest hub motor targets from the incoming message."""
+        self.last_command_time = time.monotonic()
+        self.watchdog_logged = False
         self.enabled = bool(msg.enable)
 
         if not self.enabled:
@@ -120,6 +129,24 @@ class HubMotorNode(Node):
             self.stop_all_motors()
 
         self.start_next_i2c_write()
+
+    def watchdog_callback(self) -> None:
+        """Force hub motors to zero if commands stop arriving."""
+        if not self.enabled:
+            return
+
+        if (time.monotonic() - self.last_command_time) <= self.command_timeout_sec:
+            return
+
+        self.enabled = False
+        self.stop_all_motors()
+        self.start_next_i2c_write()
+
+        if not self.watchdog_logged:
+            self.get_logger().error(
+                "Hub motor command watchdog expired, forcing all motors to zero"
+            )
+            self.watchdog_logged = True
 
     def set_motor_power(self, motor_name: str, raw_power: int) -> None:
         """Convert one motor power command into a safe DAC target."""

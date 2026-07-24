@@ -1,21 +1,19 @@
 core_node:
   ros__parameters:
-    steering_center: 0.0
-    steering_input_max: 100.0
-    steering_deadband: 5.0
-    max_steer_angle: 70.0
-
-    throttle_center: 0.0
-    throttle_input_max: 100.0
-    throttle_deadband: 5.0
+    steer_input_deadband: 5
+    steer_input_max: 100
+    steer_max: 60
+    throttle_deadband: 10
+    throttle_input_max: 100
+    throttle_max: 60
 
     topic_rc_input: /rc/input
     topic_gnss: /robot/gnss
     topic_command: /user/command
-
     topic_relay: /robot/relay
     topic_steer: /robot/steer
     topic_hub_motor: /robot/hub_motor
+    topic_brake: /robot/brake
 
     update_hz: 10    
     buzzer_pin: 18
@@ -47,10 +45,10 @@ relay_node:
 
     active_low: true
 
-robot_rc_node:
+rc_node:
   ros__parameters:
     topic_name: /rc/input
-    serial_port: /dev/ttyUSB0
+    serial_port: "/dev/serial/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.2:1.0-port0"
     serial_baud: 115200
     serial_timeout: 0.5
     read_hz: 10.0
@@ -123,6 +121,8 @@ hubmotor_node:
     primary_address: 96
     secondary_address: 97
     max_power_percentage: 100
+    command_timeout_sec: 0.5
+    watchdog_frequency: 10.0
 
     front_left_mux_channel: 2
     front_right_mux_channel: 3
@@ -154,10 +154,10 @@ telemetry_node:
     status_topic: /robot/status
     command_topic: /user/command
 
+
 brake_node:
   ros__parameters:
-    serial_port: /dev/ttyUSB1
+    serial_port: "/dev/serial/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.4:1.0-port0"
     baudrate: 115200
-    frequency: 10
-    min_pos: 900
-    max_pos: 1150
+    stroke_max: 250
+    topic_brake: /robot/brake
