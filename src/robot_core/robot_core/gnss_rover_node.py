@@ -39,7 +39,7 @@ class GnssRoverNode(Node):
         self.publish_period_s = float(
             _get_param(self, "publish_period_s", 0.1)
         )
-        self.log_period_s = float(_get_param(self, "log_period_s", 1.0))
+        self.log_period_s = float(_get_param(self, "log_period_s", 5.0))
         self._last_log_time = 0.0
         self.rtcm_log_period_s = float(_get_param(self, "rtcm_log_period_s", 2.0))
         self._last_rtcm_log_time = 0.0
@@ -120,7 +120,7 @@ class GnssRoverNode(Node):
 
         now = time.monotonic()
         if now - self._last_log_time >= self.log_period_s:
-            return
+            
             self._last_log_time = now
             self.get_logger().info(
                 f"Mod: {msg.fix_type} | Uydu: {msg.satellite_count} "

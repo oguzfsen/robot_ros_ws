@@ -14,6 +14,7 @@ from std_msgs.msg import Int32
 from std_msgs.msg import UInt8MultiArray
 
 import serial
+from serial.tools import list_ports
 
 from robot_core.Mission import Mission
 from robot_core.Tools import RobotState, _get_param
@@ -138,11 +139,34 @@ class TelemetryNode(Node):
                 now = time.monotonic()
                 if now - self._last_connect_log_time >= self.reconnect_delay_s:
                     self._last_connect_log_time = now
+                    available_ports = self._describe_available_serial_ports()
                     self.get_logger().warn(
-                        f"Telemetry serial baglanamadi: {self.serial_port} ({exc})"
+                        "Telemetry serial baglanamadi: "
+                        f"{self.serial_port} ({exc}) | mevcut_portlar={available_ports}"
                     )
                 self.serial_conn = None
                 return False
+
+    def _describe_available_serial_ports(self) -> str:
+        try:
+            ports = sorted(list_ports.comports(), key=lambda port: port.device or "")
+        except Exception as exc:
+            return f"listelenemedi:{exc}"
+
+        if not ports:
+            return "none"
+
+        descriptions = []
+        for port in ports:
+            parts = [port.device or "unknown"]
+            if port.vid is not None and port.pid is not None:
+                parts.append(f"vid:pid={port.vid:04x}:{port.pid:04x}")
+            if port.serial_number:
+                parts.append(f"serial={port.serial_number}")
+            if port.location:
+                parts.append(f"location={port.location}")
+            descriptions.append(",".join(parts))
+        return "; ".join(descriptions)
 
     def _read_serial_loop(self) -> None:
         while self._running:
@@ -188,10 +212,10 @@ class TelemetryNode(Node):
                 now = time.monotonic()
                 if now - self._last_rtcm_log_time >= 2.0:
                     self._last_rtcm_log_time = now
-                    self.get_logger().info(
-                        "RTCM seri hattan alindi ve /station/rtcm'e basildi: "
-                        f"frame_count={self._rtcm_frame_count} bytes={len(rtcm_frame)}"
-                    )
+                    #self.get_logger().info(
+                    #    "RTCM seri hattan alindi ve /station/rtcm'e basildi: "
+                    #    f"frame_count={self._rtcm_frame_count} bytes={len(rtcm_frame)}"
+                    #)
                 continue
 
             if first_byte == self.JSON_FRAME_PREFIX[0]:
@@ -688,7 +712,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

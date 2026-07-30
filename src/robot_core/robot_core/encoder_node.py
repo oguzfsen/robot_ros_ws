@@ -111,7 +111,7 @@ class EncoderNode(Node):
             self.publisher.publish(msg)
 
             if self.publish_waiting:
-                self.get_logger().info(str(self.pending_values))
+                # self.get_logger().info(str(self.pending_values))
                 self.publish_waiting = False
 
             self.pending_values = []

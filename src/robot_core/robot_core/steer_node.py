@@ -31,7 +31,7 @@ class SteerNode(Node):
         self.max_steer_angle_deg = float(_get_param(self, "max_steer_angle_deg", 60.0))
         self.drive_pulse_1 = int(_get_param(self, "drive_pulse_1", 3000))
         self.drive_pulse_2 = int(_get_param(self, "drive_pulse_2", 3000))
-        self.drive_pulse_3 = int(_get_param(self, "drive_pulse_3", 3800))
+        self.drive_pulse_3 = int(_get_param(self, "drive_pulse_3", 3000))
         self.drive_pulse_4 = int(_get_param(self, "drive_pulse_4", 3000))
         self.fake_pid = int(_get_param(self, "fake_pid", 10.0))
 

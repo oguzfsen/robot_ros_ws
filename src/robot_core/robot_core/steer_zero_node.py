@@ -46,7 +46,7 @@ class SteerZeroNode(Node):
 
     STEERING_CENTER = 0
     STEERING_DEADBAND = 8
-    MANUAL_PULSE = 1200
+    MANUAL_PULSE = 2000
 
     SAVE_INTERVAL_SEC = 1.0
 
