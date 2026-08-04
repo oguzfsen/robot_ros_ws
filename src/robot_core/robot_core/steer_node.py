@@ -28,6 +28,12 @@ class SteerNode(Node):
         self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
         self.deadband_deg = float(_get_param(self, "deadband_deg", 2.0))
         self.encoder_timeout_sec = float(_get_param(self, "encoder_timeout_sec", 0.5))
+        self.encoder_zero_response_timeout_sec = float(
+            _get_param(self, "encoder_zero_response_timeout_sec", 2.0)
+        )
+        self.encoder_zero_startup_wait_sec = float(
+            _get_param(self, "encoder_zero_startup_wait_sec", 20.0)
+        )
         self.max_steer_angle_deg = float(_get_param(self, "max_steer_angle_deg", 60.0))
         self.drive_pulse_1 = int(_get_param(self, "drive_pulse_1", 3000))
         self.drive_pulse_2 = int(_get_param(self, "drive_pulse_2", 3000))
@@ -70,7 +76,7 @@ class SteerNode(Node):
 
         self.encoder_zero_client = self.create_client(EncoderZeroGet, self.database_listen_client)
         self._wait_for_service(self.encoder_zero_client)
-        self.encoder_zero_values = self.read_db()
+        self.encoder_zero_values = self.read_db_with_retry()
         self.get_logger().info(str(self.encoder_zero_values))
         self.enabled = False
         self.target_angles = [0, 0, 0, 0]
@@ -473,7 +479,11 @@ class SteerNode(Node):
         """
         request = EncoderZeroGet.Request()
         future = self.encoder_zero_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        rclpy.spin_until_future_complete(
+            self,
+            future,
+            timeout_sec=self.encoder_zero_response_timeout_sec,
+        )
 
         if not future.done():
             raise RuntimeError("Encoder zero service timeout")
@@ -502,6 +512,28 @@ class SteerNode(Node):
         )
         
         return zero_values
+
+    def read_db_with_retry(self) -> List[int]:
+        deadline = time.monotonic() + max(1.0, self.encoder_zero_startup_wait_sec)
+        last_error: Exception | None = None
+        attempt = 0
+
+        while rclpy.ok() and time.monotonic() < deadline:
+            attempt += 1
+            try:
+                return self.read_db()
+            except Exception as exc:
+                last_error = exc
+                self.get_logger().warn(
+                    "Encoder zero service henuz cevap vermedi, tekrar denenecek: "
+                    f"attempt={attempt} error={exc}"
+                )
+                time.sleep(0.5)
+
+        raise RuntimeError(
+            "Encoder zero values could not be loaded during startup"
+            + (f": {last_error}" if last_error is not None else "")
+        )
 #endregion
 
 #region Helper Functions
@@ -509,7 +541,7 @@ class SteerNode(Node):
     def _wait_for_service(self, client) -> None:
         while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info(
-                "Waiting for I2C manager service..."
+                f"Waiting for service: {client.srv_name}"
             )
     
     def map_range(self, value: int,

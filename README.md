@@ -5,34 +5,28 @@ This README documents only the architecture decisions clarified in the current i
 ## Mission Flow
 
 - A user mission is sent from the cloud side.
-- The station side forwards the mission over serial as raw bytes without interpreting the payload.
-- The robot-side `telemetry_node` receives that serial payload.
-- The robot-side `telemetry_node` parses the incoming mission JSON and stores it by calling the database service `/database/mission_set`.
+- The robot-side `signalr_node` receives `/user/mission` directly from the SignalR hub.
+- The robot-side `signalr_node` parses the incoming mission JSON and stores it by calling the database service `/database/mission_set`.
 - When the database service replies, the result is queued as a response entry and appended to the next outgoing robot status message through `RobotStatus.responses`.
 
 In short:
 
-`cloud -> station telemetry -> serial bytes -> robot telemetry -> database service -> next robot status.responses`
+`cloud -> robot signalr_node -> database service -> next robot status.responses`
 
-## Station Compatibility Contract
+## SignalR Contract
 
-The robot-side telemetry implementation must stay compatible with the station-side telemetry node in:
+The robot-side bridge now talks directly to the cloud hub:
 
-`/home/oguz/repos/station_ws/src/station_core/station_core/telemetry_node.py`
+- hub endpoint: `/robotHub`
+- hub method: `SendMessage(string topic, string json)`
+- client event: `ReceiveMessage(topic, json)`
 
-Important compatibility rules:
+Robot-side topic responsibilities:
 
-- The station forwards `/user/command`, `/user/mission`, and `/station/rtcm` to serial as raw bytes.
-- The station expects robot status on serial as UTF-8 JSON text.
-- The station does not parse or transform mission/command payloads before sending them to the robot.
-
-Because of that, the robot-side telemetry node must:
-
-- parse incoming serial data as a mixed stream of JSON packets and RTCM binary frames,
-- publish RTCM frames immediately to `/station/rtcm`,
-- publish command JSON to `/user/command`,
-- handle mission JSON locally and save it through the database service,
-- write outgoing robot status back to serial as JSON.
+- receive `/user/command` from SignalR and publish `robot_interfaces/Command` to ROS,
+- receive `/user/mission` from SignalR and store it through `/database/mission_set`,
+- receive `/station/rtcm` from SignalR and publish it immediately to `/station/rtcm`,
+- build `/robot/status` JSON locally and send it back to SignalR.
 
 ## RTCM Handling
 
@@ -41,8 +35,8 @@ Because of that, the robot-side telemetry node must:
 Reason:
 
 - `gnss_rover_node.py` subscribes to `/station/rtcm`.
-- RTCM correction frames arrive through telemetry serial traffic.
-- The robot-side telemetry node must detect RTCM frames (starting with `0xD3`) and publish them immediately to `/station/rtcm`.
+- RTCM correction frames now arrive from the cloud as base64 payloads inside the `/station/rtcm` SignalR topic.
+- The robot-side `signalr_node` decodes the frame and publishes it immediately to `/station/rtcm`.
 
 ## Mission Database Ownership
 
@@ -51,8 +45,8 @@ The mission table is owned by `database_node`, not by `telemetry_node`.
 That means:
 
 - `database_node` is responsible for creating/checking the SQLite schema at startup.
-- `telemetry_node` must not create mission tables directly.
-- `telemetry_node` stores missions only through ROS services.
+- `signalr_node` must not create mission tables directly.
+- `signalr_node` stores missions only through ROS services.
 
 ## Mission-Related Services
 
@@ -156,7 +150,7 @@ At the moment, mission responses are implemented; command execution responses ar
 
 Mission handling now happens as:
 
-- serial input arrives at `telemetry_node`,
+- mission input arrives at `signalr_node`,
 - the mission is stored through the database service,
 - later, `core_node` will query the mission from the database by `mission_id` when autonomous execution is requested.
 

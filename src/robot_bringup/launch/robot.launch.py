@@ -94,9 +94,9 @@ def generate_launch_description():
         parameters=[params]
     )
 
-    telemetry_node = Node(
+    signalr_node = Node(
         package="robot_core",
-        executable="telemetry_node",
+        executable="signalr_node",
         parameters=[params]
     )
 
@@ -111,6 +111,6 @@ def generate_launch_description():
     ld.add_action(compass_node)
     ld.add_action(core_node)
     ld.add_action(gnss_rover_node)
-    ld.add_action(telemetry_node)
+    ld.add_action(signalr_node)
 
     return ld

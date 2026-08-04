@@ -80,6 +80,8 @@ steer_node:
     deadband_deg: 2.0
     control_frequency: 10.0
     encoder_timeout_sec: 0.5
+    encoder_zero_response_timeout_sec: 2.0
+    encoder_zero_startup_wait_sec: 20.0
     max_steer_angle_deg: 60.0
     fake_pid: 10.0 
     database_listen_client: /database/encoder_zero_get
@@ -139,17 +141,26 @@ gnss_rover_node:
     log_period_s: 5.0
     rtcm_topic: /station/rtcm
 
-telemetry_node:
+signalr_node:
   ros__parameters:
     robot_id: UTAEMBOT
-    serial_port: /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
-    baudrate: 57600
-    serial_timeout_s: 0.1
-    reconnect_delay_s: 2.0
+    hub_url: https://gorev-yonetici.com/robotHub
+    send_method_name: SendMessage
+    receive_method_name: ReceiveMessage
+    reconnect_delay_s: 1.0
+    poll_timeout_s: 15.0
+    http_timeout_s: 15.0
+    status_period_s: 1.0
+    status_send_wait_s: 0.0
     database_mission_set_service: /database/mission_set
     state_topic: /robot/state
     gnss_topic: /robot/gnss
     mission_state_topic: /robot/mission_state
+    signalr_command_topic: /user/command
+    signalr_mission_topic: /user/mission
+    signalr_status_topic: /robot/status
+    signalr_rtcm_topic: /station/rtcm
+    signalr_station_status_topic: /station/status
     rtcm_topic: /station/rtcm
     status_topic: /robot/status
     command_topic: /user/command

@@ -33,6 +33,8 @@ class DatabaseNode(Node):
         tables_json = _get_param(self, "tables_json", None)
         self.tables = json.loads(tables_json)
 
+        self.ensure_database()
+
         self.service_encoder_zero_get = self.create_service(
             EncoderZeroGet,
             "/database/encoder_zero_get",
@@ -62,8 +64,6 @@ class DatabaseNode(Node):
             "/database/mission_progress_set",
             self.mission_progress_set_callback,
         )
-
-        self.ensure_database()
 
         self.get_logger().info("database_node started")
 
