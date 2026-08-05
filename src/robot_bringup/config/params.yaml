@@ -84,6 +84,8 @@ steer_node:
     encoder_zero_startup_wait_sec: 20.0
     max_steer_angle_deg: 60.0
     fake_pid: 10.0 
+    no_response_duration_s: 3.0
+    malfunction_topic: /robot/malfunction
     database_listen_client: /database/encoder_zero_get
     encoder_listen_topic: /robot/steering_encoders
     core_listen_topic: /robot/steer

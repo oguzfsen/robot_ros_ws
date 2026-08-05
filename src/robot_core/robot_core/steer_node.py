@@ -4,7 +4,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32MultiArray
 
-from robot_interfaces.msg import Steer
+from robot_interfaces.msg import Steer, Malfunction
 from robot_interfaces.srv import I2COperation, EncoderZeroGet
 from robot_core.Tools import _get_param
 from typing import List
@@ -40,6 +40,10 @@ class SteerNode(Node):
         self.drive_pulse_3 = int(_get_param(self, "drive_pulse_3", 3000))
         self.drive_pulse_4 = int(_get_param(self, "drive_pulse_4", 3000))
         self.fake_pid = int(_get_param(self, "fake_pid", 10.0))
+        self.no_response_duration_s = float(_get_param(self, "no_response_duration_s", 3.0))
+        # Treat tiny encoder jitter as no movement for stall detection.
+        self.no_response_min_delta_deg = max(1.0, self.deadband_deg)
+
 
         self.front_left_forward_pin = int(_get_param(self, "front_left_forward_pin", 5))
         self.front_right_forward_pin = int(_get_param(self, "front_right_forward_pin", 1))
@@ -52,6 +56,7 @@ class SteerNode(Node):
         self.database_listen_client = str(_get_param(self, "database_listen_client", "/database/encoder_zero_get"))
         self.encoder_listen_topic = str(_get_param(self, "encoder_listen_topic", "/robot/steering_encoders"))
         self.core_listen_topic = str(_get_param(self, "core_listen_topic", "/robot/steer"))
+        self.malfunction_topic = str(_get_param(self, "malfunction_topic", "/robot/malfunction"))
 
         self.drive_pulses = [
             self.drive_pulse_1,
@@ -84,10 +89,21 @@ class SteerNode(Node):
         self.last_encoder_update_sec = 0.0
         self.waiting_for_encoder_logged = False
         self.encoder_timeout_logged = False
+        self.malfunction_active = False
+        now_sec = time.monotonic()
+        self.motor_response_state = {
+            motor_id: {
+                "command": "stop",
+                "last_angle_deg": None,
+                "last_motion_sec": now_sec,
+            }
+            for motor_id in range(1, 5)
+        }
 
         self.encoder_values = []
         self.enc_subs = self.create_subscription(Int32MultiArray, self.encoder_listen_topic, self.encoder_callback, 10)
         self.steer_subs = self.create_subscription(Steer, self.core_listen_topic, self.steer_callback, 10)
+        self.mulfunction_publisher = self.create_publisher(Malfunction, self.malfunction_topic, 10)
 
 
         self.motor_pins = {
@@ -141,6 +157,7 @@ class SteerNode(Node):
 
         self.control_timer = self.create_timer(1.0 / self.control_frequency, self.control_callback)
 
+
         self.enc_pub_timer = self.create_timer(1.0, self.enc_pub_callback)
         self.get_logger().info(
             f"SteerNode started. control_frequency={self.control_frequency} Hz, "
@@ -170,6 +187,12 @@ class SteerNode(Node):
 
 #region Steering
     def steer_callback(self, msg:Steer) -> None:
+        if self.malfunction_active:
+            self.enabled = False
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+            return
+
         self.enabled = bool(msg.enable)
         
         self.target_angles = [
@@ -190,7 +213,13 @@ class SteerNode(Node):
     def control_callback(self) -> None:
         self.start_next_i2c_write()
 
+        if self.malfunction_active:
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+            return
+
         if not self.enabled:
+            self.reset_all_motor_response_checks()
             self.stop_all_motors()
             self.start_next_i2c_write()
             return
@@ -199,6 +228,7 @@ class SteerNode(Node):
             if not self.waiting_for_encoder_logged:
                 self.get_logger().warn("Waiting for steering encoder data...")
                 self.waiting_for_encoder_logged = True
+            self.reset_all_motor_response_checks()
             return
 
         if (time.monotonic() - self.last_encoder_update_sec) > self.encoder_timeout_sec:
@@ -206,18 +236,21 @@ class SteerNode(Node):
                 self.get_logger().warn("Steering encoder data timed out")
                 self.encoder_timeout_logged = True
             self.encoder_ready = False
+            self.reset_all_motor_response_checks()
             self.stop_all_motors()
             self.start_next_i2c_write()
             return
 
         try:
-            self.steer_to_angle(1, self.target_angles[0])
-            self.steer_to_angle(2, self.target_angles[1])
-            self.steer_to_angle(3, self.target_angles[2])
-            self.steer_to_angle(4, self.target_angles[3])
+            for motor_id, target_deg in enumerate(self.target_angles, start=1):
+                self.steer_to_angle(motor_id, target_deg)
+                if self.malfunction_active:
+                    self.start_next_i2c_write()
+                    return
             self.start_next_i2c_write()
         except Exception as ex:
             self.get_logger().error(f"Steering control error: {ex}")
+            self.reset_all_motor_response_checks()
             self.stop_all_motors()
             self.start_next_i2c_write()
 
@@ -239,8 +272,24 @@ class SteerNode(Node):
         error_deg = self.normalize_angle(target_deg - current_deg)
 
         if error_deg < -self.deadband_deg:
-            self.turn_left(motor_id, error_deg)
+            command = "left"
         elif error_deg > self.deadband_deg:
+            command = "right"
+        else:
+            command = "stop"
+
+        if self.check_motor_no_response(
+            motor_id,
+            current_deg,
+            target_deg,
+            error_deg,
+            command,
+        ):
+            return
+
+        if command == "left":
+            self.turn_left(motor_id, error_deg)
+        elif command == "right":
             self.turn_right(motor_id, error_deg)
         else:
             self.stop_motor(motor_id)
@@ -309,6 +358,91 @@ class SteerNode(Node):
 
         self.motor_state[motor_id] = "stop"
         self.motor_pwm[motor_id] = 0
+
+    def check_motor_no_response(
+        self,
+        motor_id: int,
+        current_deg: int,
+        target_deg: int,
+        error_deg: int,
+        command: str,
+    ) -> bool:
+        state = self.motor_response_state[motor_id]
+        now_sec = time.monotonic()
+
+        if command == "stop":
+            self.reset_motor_response_check(motor_id, current_deg=current_deg, now_sec=now_sec)
+            return False
+
+        if state["last_angle_deg"] is None:
+            self.reset_motor_response_check(
+                motor_id,
+                current_deg=current_deg,
+                now_sec=now_sec,
+                command=command,
+            )
+            return False
+
+        angle_delta = abs(self.normalize_angle(current_deg - state["last_angle_deg"]))
+        if angle_delta >= self.no_response_min_delta_deg:
+            state["last_angle_deg"] = current_deg
+            state["last_motion_sec"] = now_sec
+
+        if state["command"] != command:
+            self.reset_motor_response_check(
+                motor_id,
+                current_deg=current_deg,
+                now_sec=now_sec,
+                command=command,
+            )
+            return False
+
+        if (now_sec - state["last_motion_sec"]) < self.no_response_duration_s:
+            return False
+
+        self.trigger_malfunction(
+            "Steering encoder not responding: "
+            f"motor={motor_id} command={command} "
+            f"target_deg={target_deg} current_deg={current_deg} "
+            f"error_deg={error_deg} timeout_s={self.no_response_duration_s:.1f}"
+        )
+        return True
+
+    def reset_motor_response_check(
+        self,
+        motor_id: int,
+        current_deg: int | None = None,
+        now_sec: float | None = None,
+        command: str = "stop",
+    ) -> None:
+        if now_sec is None:
+            now_sec = time.monotonic()
+
+        self.motor_response_state[motor_id]["command"] = command
+        self.motor_response_state[motor_id]["last_angle_deg"] = current_deg
+        self.motor_response_state[motor_id]["last_motion_sec"] = now_sec
+
+    def reset_all_motor_response_checks(self) -> None:
+        now_sec = time.monotonic()
+        for motor_id in range(1, 5):
+            self.reset_motor_response_check(motor_id, now_sec=now_sec)
+
+    def trigger_malfunction(self, error: str) -> None:
+        if self.malfunction_active:
+            return
+
+        self.malfunction_active = True
+        self.enabled = False
+        self.reset_all_motor_response_checks()
+        self.stop_all_motors()
+        self.start_next_i2c_write()
+
+        msg = Malfunction()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.malfunction = True
+        msg.error = error
+        self.mulfunction_publisher.publish(msg)
+        self.get_logger().error(error)
 
 #endregion
 

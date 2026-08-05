@@ -46,7 +46,8 @@ from robot_interfaces.msg import (
     HubMotor,
     RobotRelay,
     Steer,
-    Brake
+    Brake,
+    Malfunction
 )
 
 from robot_core.Buzzer import Buzzer
@@ -109,6 +110,12 @@ class CoreNode(Node):
             self.gnss_callback,
             10
         )
+        self.malfunction_subscription = self.create_subscription(
+            Malfunction,
+            self.topic_malfunction,
+            self.malfunction_callback,
+            10
+        )
         self.relay_publisher = self.create_publisher(
             RobotRelay,
             self.topic_relay,
@@ -160,7 +167,11 @@ class CoreNode(Node):
         self.publish_steer(msg, enabled=self.arm_on)
         self.publish_hubmotor(msg, enabled=self.arm_on)
 
-
+    def malfunction_callback(self, msg:Malfunction) -> None:
+        if msg.malfunction:
+            self.robot_state = RobotState.MALFUNTION
+            self.get_logger().error(msg.error)
+    
 
     def command_callback(self, msg:Command) -> None:
         command_type = msg.command_type
