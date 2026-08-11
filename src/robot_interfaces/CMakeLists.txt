@@ -19,6 +19,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Brake.msg"
   "msg/Command.msg"
   "msg/Compass.msg"
+  "msg/Emergency.msg"
   "msg/Gnss.msg"
   "msg/GnssAbs.msg"
   "msg/HubMotor.msg"

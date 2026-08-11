@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32MultiArray
+from std_msgs.msg import Float32, Int32MultiArray
 
 from robot_interfaces.msg import Steer, Malfunction
 from robot_interfaces.srv import I2COperation, EncoderZeroGet
@@ -104,6 +104,7 @@ class SteerNode(Node):
         self.enc_subs = self.create_subscription(Int32MultiArray, self.encoder_listen_topic, self.encoder_callback, 10)
         self.steer_subs = self.create_subscription(Steer, self.core_listen_topic, self.steer_callback, 10)
         self.mulfunction_publisher = self.create_publisher(Malfunction, self.malfunction_topic, 10)
+        self.average_steering_publisher = self.create_publisher(Float32, "/robot/average_steering", 10)
 
 
         self.motor_pins = {
@@ -196,10 +197,10 @@ class SteerNode(Node):
         self.enabled = bool(msg.enable)
         
         self.target_angles = [
-            msg.front_left_angle,
-            msg.front_right_angle,
-            msg.rear_left_angle,
-            msg.rear_right_angle
+            msg.front_left,
+            msg.front_right,
+            msg.rear_left,
+            msg.rear_right
         ]
         
         # (-100,+100) aralığından (-75,+75) aralığına map'lanıyor.
@@ -212,6 +213,17 @@ class SteerNode(Node):
 
     def control_callback(self) -> None:
         self.start_next_i2c_write()
+
+        if self.encoder_ready:
+            steering_angles = [
+                self.normalize_angle(self.to_degree(raw) - self.to_degree(zero))
+                for raw, zero in zip(self.encoder_values[:2], self.encoder_zero_values[:2])
+            ]
+            average_steering = Float32()
+            average_steering.data = float(
+                max(-90.0, min(90.0, -sum(steering_angles) / len(steering_angles)))
+            )
+            self.average_steering_publisher.publish(average_steering)
 
         if self.malfunction_active:
             self.stop_all_motors()

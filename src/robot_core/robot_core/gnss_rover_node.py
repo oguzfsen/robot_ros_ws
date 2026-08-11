@@ -122,14 +122,14 @@ class GnssRoverNode(Node):
         if now - self._last_log_time >= self.log_period_s:
             
             self._last_log_time = now
-            self.get_logger().info(
-                f"Mod: {msg.fix_type} | Uydu: {msg.satellite_count} "
-                f"| fix_type: {msg.fix_type}"
-                f"| Hassasiyet: {msg.accuracy_m} m "
-                f"| Hiz: {msg.ground_speed_m_s} m/s "
-                f"| Yon: {msg.heading_deg} deg | Enlem: {msg.latitude} "
-                f"| Boylam: {msg.longitude}"
-            )
+            #self.get_logger().info(
+            #    f"Mod: {msg.fix_type} | Uydu: {msg.satellite_count} "
+            #    f"| fix_type: {msg.fix_type}"
+            #    f"| Hassasiyet: {msg.accuracy_m} m "
+            #    f"| Hiz: {msg.ground_speed_m_s} m/s "
+            #    f"| Yon: {msg.heading_deg} deg | Enlem: {msg.latitude} "
+            #    f"| Boylam: {msg.longitude}"
+            #)
 
     def destroy_node(self):
         try:

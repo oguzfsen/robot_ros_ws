@@ -295,12 +295,12 @@ class SignalRNode(Node):
             now = time.monotonic()
             if pending_responses or now - self._last_status_log_time >= 5.0:
                 self._last_status_log_time = now
-                self.get_logger().info(
-                    "Robot status SignalR'a gonderildi: "
-                    f"state={status_payload['robot_state']} "
-                    f"mission_id={status_payload['mission_id']} "
-                    f"responses={len(pending_responses)}"
-                )
+                #self.get_logger().info(
+                #    "Robot status SignalR'a gonderildi: "
+                #    f"state={status_payload['robot_state']} "
+                #    f"mission_id={status_payload['mission_id']} "
+                #    f"responses={len(pending_responses)}"
+                #)
         except Exception as exc:
             if pending_responses:
                 self._restore_pending_status_responses(pending_responses)

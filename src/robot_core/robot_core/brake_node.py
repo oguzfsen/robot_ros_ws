@@ -69,7 +69,7 @@ class BrakeNode(Node):
         self.get_logger().info("brake_node up and running")
 
     def brake_callback(self, msg: Brake) -> None:
-        self.desired_brake = bool(msg.activate)
+        self.desired_brake = bool(msg.brake)
         if not self.desired_brake:
             self.last_ping_time = 0.0
 

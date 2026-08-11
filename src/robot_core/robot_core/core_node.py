@@ -47,13 +47,15 @@ from robot_interfaces.msg import (
     RobotRelay,
     Steer,
     Brake,
-    Malfunction
+    Malfunction,
+    Emergency,
 )
-
+from robot_interfaces.srv import MissionGet
+from std_msgs.msg import Int32MultiArray, Float32
 from robot_core.Buzzer import Buzzer
-from robot_core.Led import Led
 from robot_core.Tools import RobotState, _get_param
 from robot_core.Mission import Mission
+from robot_core.Ackermann import Ackermann
 
 class CoreNode(Node):
 
@@ -74,72 +76,56 @@ class CoreNode(Node):
         self.topic_steer = str(_get_param(self, "topic_steer", "/robot/steer"))
         self.topic_hub_motor = str(_get_param(self, "topic_hub_motor", "/robot/hub_motor"))
         self.topic_brake = str(_get_param(self, "topic_brake", "/robot/brake"))
+        self.topic_malfunction = str(_get_param(self, "topic_malfunction", "/robot/malfunction"))
+        self.topic_emergency = str(_get_param(self, "topic_emergency", "/robot/emergency"))
         
         self.update_hz = int(_get_param(self, "update_hz", 10))        
         buzzer_gpio = int(_get_param(self, "buzzer_pin", 18))
         led_gpio = int(_get_param(self, "led_pin", 23))
 
+        self.wheelbase = float(_get_param(self, "wheelbase", 1.6))
+        self.wheel_track = float(_get_param(self, "wheel_track", 1.4))
+        self.wheel_diameter = float(_get_param(self, "wheel_diameter", 0.4)) # tekerlek çapı
+        self.ackermann = Ackermann(self.wheelbase, self.wheel_track, self.wheel_diameter)
+
+
         self.buzzer = Buzzer(buzzer_gpio)
-        self.led = Led(led_gpio)
-
-        self.robot_state = RobotState.IDLE
-        self.arm_on = False
-        self.brake = True
-        self.brake_release_time = self.get_clock().now()
-        self.rc_steer = 0
-        self.rc_throttle = 0
-        self.fault_active = False
-
         self.mission = None
 
-        self.rc_subscription = self.create_subscription(
-            RcInput,
-            self.topic_rc_input,
-            self.rc_callback,
-            10,
-        )
-        self.command_subscription = self.create_subscription(
-            Command,
-            self.topic_command,
-            self.command_callback,
-            10
-        )
-        self.gnss_subscription = self.create_subscription(
-            Gnss,
-            self.topic_gnss,
-            self.gnss_callback,
-            10
-        )
-        self.malfunction_subscription = self.create_subscription(
-            Malfunction,
-            self.topic_malfunction,
-            self.malfunction_callback,
-            10
-        )
-        self.relay_publisher = self.create_publisher(
-            RobotRelay,
-            self.topic_relay,
-            10,
-        )
-        self.steer_publisher = self.create_publisher(
-            Steer,
-            self.topic_steer,
-            10,
-        )
-        self.hubmotor_publisher = self.create_publisher(
-            HubMotor,
-            self.topic_hub_motor,
-            10,
-        )
-        self.brake_publisher = self.create_publisher(
-            Brake,
-            self.topic_brake,
-            10,
-        )
+        self.robot_state = RobotState.IDLE
+        self.rc_ignition = False
+        self.rc_reverse = False
+        self.rc_steering = 0
+        self.rc_throttle = 0
+        self.brake = False
+        self.brake_release_time = self.get_clock().now()
+        self.back_energy = False
+        self.avg_steering = 0.0
+
+        self.accuracy_m = 999.0
+        self.ground_speed_m_s = 0.0
+        self.latitude = 0.0
+        self.longitude = 0.0
+
+        self.rc_subscription = self.create_subscription(RcInput, self.topic_rc_input, self.rc_callback, 10)
+        self.command_subscription = self.create_subscription(Command, self.topic_command, self.command_callback, 10)
+        self.gnss_subscription = self.create_subscription(Gnss, self.topic_gnss, self.gnss_callback, 10)
+        self.malfunction_subscription = self.create_subscription(Malfunction, self.topic_malfunction, self.malfunction_callback, 10)
+        self.emergency_subscription = self.create_subscription(Emergency, self.topic_emergency, self.emergency_callback, 10)
+        self.average_steering_subscription = self.create_subscription(Float32, "/robot/average_steering", self.avg_steering_callback, 10)
+        
+
+        self.relay_publisher = self.create_publisher(RobotRelay, self.topic_relay, 10)
+        self.steer_publisher = self.create_publisher(Steer, self.topic_steer, 10)
+        self.hubmotor_publisher = self.create_publisher(HubMotor, self.topic_hub_motor, 10)
+        self.brake_publisher = self.create_publisher(Brake, self.topic_brake, 10)
+
+        self.mission_puller = self.create_client(MissionGet,"/database/mission_get")
 
         self.create_timer(1.0/self.update_hz, self.update)
 
         self.get_logger().info("Robot Core up and running.")
+
 
 
     def update(self) -> None:
@@ -147,29 +133,42 @@ class CoreNode(Node):
             self.do_mission()
 
         self.buzzer.update()
-        self.led.update(self.robot_state)
+        
 
         
     def rc_callback(self, msg: RcInput) -> None:
-        msg.throttle = self.clamp(0, self.throttle_input_max, msg.throttle)
-        msg.steering = self.clamp(-self.steer_input_max, self.steer_input_max, msg.steering)
 
-        if msg.connected and msg.ignition == 1:
-            self.robot_state = RobotState.MANUAL
-            self.buzzer.arm_on()
-            self.arm_on = True
+        if msg.connected:
+            self.rc_ignition = msg.ignition == 1
+            self.rc_reverse = msg.reverse == 2
+
+            if self.rc_ignition:
+                self.robot_state = RobotState.MANUAL
+                self.rc_throttle = self.clamp(0, self.throttle_input_max, msg.throttle)
+                self.rc_steering = self.clamp(-self.steer_input_max, self.steer_input_max, msg.steering)
+            else:
+                if self.robot_state != RobotState.MISSION:
+                    self.robot_state = RobotState.IDLE
+                self.rc_reverse = False
+                self.rc_throttle = 0
+                self.rc_steering = 0
+
+            self.publish_relay(self.rc_ignition, self.rc_reverse, self.back_energy)
+            self.publish_steer(self.rc_steering)
+            self.publish_hubmotor(self.rc_throttle)
+                    
         else:
-            self.robot_state = RobotState.IDLE
-            self.buzzer.idle()
-            self.arm_on = False
+            ... # do nothing
 
-        self.publish_relay(msg, enabled=self.arm_on)
-        self.publish_steer(msg, enabled=self.arm_on)
-        self.publish_hubmotor(msg, enabled=self.arm_on)
 
     def malfunction_callback(self, msg:Malfunction) -> None:
         if msg.malfunction:
             self.robot_state = RobotState.MALFUNTION
+            self.get_logger().error(msg.error)
+
+    def emergency_callback(self, msg:Emergency) -> None:
+        if msg.emergency:
+            self.robot_state = RobotState.EMERGENCY
             self.get_logger().error(msg.error)
     
 
@@ -197,119 +196,95 @@ class CoreNode(Node):
 
 
     def start_mission(self, mission_id: int) -> None:
-        ...
+
+        if self.robot_state != RobotState.IDLE:
+            self.get_logger().error("Robot beklemede değilken görev başlatılamaz!")
+            return
+        
+        request = MissionGet.Request()
+        request.mission_id = mission_id
+        future = self.mission_puller.call_async(request)
+
+        rclpy.spin_until_future_complete(
+            self,
+            future,
+            timeout_sec = 1.0,
+        )
+
+        if not future.done():
+            raise RuntimeError("MissionGet service timeout")
+
+        response = future.result()
+        if response is None:
+            raise RuntimeError("MissionGet service returned no response")
+        if not response.success:
+            raise RuntimeError(f"MissionGet service failed: {response.message}")
+
+        self.mission = Mission(future.raw_json, 0.5, future.last_waypoint)
+        if self.mission.has_next_waypoint:
+            self.robot_state = RobotState.MISSION
+        else:
+            self.get_logger().error("Görevde sonraki nokta yok!")
+
 
     def gnss_callback(self, msg:Gnss) -> None:
-        ...
+        self.accuracy_m = msg.accuracy_m
+        self.ground_speed_m_s = msg.ground_speed_m_s
+        self.latitude = msg.latitude
+        self.longitude = msg.longitude
+        
+
+    def avg_steering_callback(self, avg_steering:Float32) -> None:
+        self.avg_steering = float(avg_steering.data)
 
 
-    def update_status_led(self) -> None:
-        if self.fault_active or self.current_mode == self.MODE_FAILSAFE:
-            self.led.set_mode(Led.MODE_FAILSAFE)
-            return
-
-        if self.current_mode == self.MODE_MISSION:
-            self.led.set_mode(Led.MODE_MISSION)
-            return
-
-        if self.current_mode == self.MODE_MANUAL:
-            self.led.set_mode(Led.MODE_MANUAL)
-            return
-
-        if self.current_mode == self.MODE_CHARGE:
-            self.led.set_mode(Led.MODE_CHARGE)
-            return
-
-        self.led.set_mode(Led.MODE_IDLE)
-
-
-    def publish_relay(self, rc_msg: RcInput, enabled: bool) -> None:
+    def publish_relay(self, ignition: bool, reverse: bool, back_energy: bool) -> None:
         relay_msg = RobotRelay()
         relay_msg.header.stamp = self.get_clock().now().to_msg()
-        if enabled:
-            relay_msg.ignition = rc_msg.ignition == 1
-            relay_msg.reverse = rc_msg.reverse == 2
-            relay_msg.brake = False
-            relay_msg.back_energy = False
-            relay_msg.alarm_lamp = relay_msg.ignition
-        else:
-            relay_msg.ignition = False
-            relay_msg.reverse = False
-            relay_msg.brake = False
-            relay_msg.back_energy = False
-            relay_msg.alarm_lamp = False
+        relay_msg.ignition = ignition
+        relay_msg.reverse = reverse
+        relay_msg.back_energy = back_energy
+        relay_msg.brake = False
+        relay_msg.alarm_lamp = False
+        
         self.relay_publisher.publish(relay_msg)
 
-    def publish_steer(self, rc_msg: RcInput, enabled: bool) -> None:
-        self.rc_steer = rc_msg.steering
-        self.rc_steer = self.clamp(-self.steer_max, self.steer_max, rc_msg.steering)
 
+    def publish_steer(self, steer: int) -> None:
         steer_msg = Steer()
         steer_msg.header.stamp = self.get_clock().now().to_msg()
-
-        if enabled:
-            steer_msg.front_left_angle = -self.rc_steer
-            steer_msg.front_right_angle = -self.rc_steer
-            steer_msg.rear_left_angle = self.rc_steer
-            steer_msg.rear_right_angle = self.rc_steer
-            steer_msg.enable = True
-            
-        else:
-            steer_msg.front_left_angle = 0
-            steer_msg.front_right_angle = 0
-            steer_msg.rear_left_angle = 0
-            steer_msg.rear_right_angle = 0
-            steer_msg.enable = False
+        steer_msg.front_left = -steer
+        steer_msg.front_right = -steer
+        steer_msg.rear_left = steer
+        steer_msg.rear_right = steer
+        steer_msg.enable = self.rc_ignition         
 
         self.steer_publisher.publish(steer_msg)
 
 
-    def publish_hubmotor(self, rc_msg: RcInput, enabled: bool) -> None:
-        if rc_msg.throttle > self.throttle_deadband:
-            requested_throttle = self.clamp(0, self.throttle_max, rc_msg.throttle)
-        else:
-            requested_throttle = 0
+    def publish_hubmotor(self, throttle: int) -> None:
 
-        release_brake = enabled and requested_throttle > 0
-        now = self.get_clock().now()
-
-        # Brake release is commanded immediately, motor power starts 1 second later.
-        if release_brake:
-            if self.brake:
-                self.brake_release_time = now
-            self.brake = False
-
-            if (now - self.brake_release_time).nanoseconds >= 1_000_000_000:
-                self.rc_throttle = requested_throttle
-            else:
-                self.rc_throttle = 0
-        else:
-            self.brake = True
-            self.rc_throttle = 0
-            self.brake_release_time = now
+        self.get_logger().info(str(self.avg_steering))
+        throttle1, throttle2, throttle3, throttle4 = self.ackermann.get_fixed(throttle, self.avg_steering)
 
         hubmotor_msg = HubMotor()
-        hubmotor_msg.header.stamp = self.get_clock().now().to_msg()
-        hubmotor_msg.enable = enabled
-        
-        if enabled:
-            hubmotor_msg.front_left = self.rc_throttle
-            hubmotor_msg.front_right = self.rc_throttle
-            hubmotor_msg.rear_left = self.rc_throttle
-            hubmotor_msg.rear_right = self.rc_throttle
-
-        else:
-            hubmotor_msg.front_left = 0
-            hubmotor_msg.front_right = 0
-            hubmotor_msg.rear_left = 0
-            hubmotor_msg.rear_right = 0
-
+        hubmotor_msg.header.stamp = self.get_clock().now().to_msg()        
+        hubmotor_msg.front_left = throttle1
+        hubmotor_msg.front_right = throttle2
+        hubmotor_msg.rear_left = throttle3
+        hubmotor_msg.rear_right = throttle4
+        hubmotor_msg.enable = self.rc_ignition
 
         self.hubmotor_publisher.publish(hubmotor_msg)
 
+        if throttle < self.throttle_deadband:
+            self.brake = True
+        else:
+            self.brake = False
+
         brake_msg = Brake()
         brake_msg.header.stamp = self.get_clock().now().to_msg()
-        brake_msg.activate = self.brake
+        brake_msg.brake = self.brake
         self.brake_publisher.publish(brake_msg)
 
 
