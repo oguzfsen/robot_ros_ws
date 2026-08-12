@@ -1,41 +1,4 @@
 #!/usr/bin/env python3
-"""
-core_node robot ros sisteminin yönetim merkezidir.
-Şu Topicleri dinleyerek bilgi toplar:
-/rc/input
-/robot/gnss
-/user/command
-Şu Topiclerle robotu yönetir:
-/robot/relay
-/robot/steer
-/robot/hub_motor
-
-kumanda ignition açılırsa robot_state = MANUAL
-    tüm kontrol kullanıcıya geçer.
-kumanda ignition kapatılırsa robot_state = IDLE
-    kontrolü otonom alabilir.
-
-görev komutları:
-    start_mission
-    start_spraying
-    stop_spraying
-    spraying_demo
-    Sadece robot_state = IDLE ise çalışır.
-
-    pause_mission
-    stop_mission
-    Sadece robot_state = MISSION ise çalışır.
-
-    return_home
-    robot_state = IDLE veya MISSION ise çalışır.
-
-    emergency
-    robot_state = IDLE veya MISSION ise çalışır.
-
-robot_state = EMERGENCY veya MALFUNCTION ise sadece uzaktan kumanda ile kontrol edilebilir. göreve başlamaz. eve dönmez...
-EMERGENCY bilinçli durdurmadır. MALFUNCTION ise robottaki bir sorun yüzünden kaynaklanır.
-
-"""
 
 import rclpy
 from rclpy.node import Node
@@ -49,6 +12,7 @@ from robot_interfaces.msg import (
     Brake,
     Malfunction,
     Emergency,
+    Compass,
 )
 from robot_interfaces.srv import MissionGet
 from std_msgs.msg import Int32MultiArray, Float32
@@ -78,7 +42,12 @@ class CoreNode(Node):
         self.topic_brake = str(_get_param(self, "topic_brake", "/robot/brake"))
         self.topic_malfunction = str(_get_param(self, "topic_malfunction", "/robot/malfunction"))
         self.topic_emergency = str(_get_param(self, "topic_emergency", "/robot/emergency"))
+        self.topic_average_steering = str(_get_param(self, "topic_average_steering", "/robot/average_steering"))
+        self.topic_mission_get = str(_get_param(self, "topic_mission_get", "/database/mission_get"))
+        self.topic_compass = str(_get_param(self, "topic_compass", "/robot/compass"))
         
+        self.compass_real_north_heading = float(_get_param(self, "compass_real_north_heading", 20.0))
+
         self.update_hz = int(_get_param(self, "update_hz", 10))        
         buzzer_gpio = int(_get_param(self, "buzzer_pin", 18))
         led_gpio = int(_get_param(self, "led_pin", 23))
@@ -98,7 +67,6 @@ class CoreNode(Node):
         self.rc_steering = 0
         self.rc_throttle = 0
         self.brake = False
-        self.brake_release_time = self.get_clock().now()
         self.back_energy = False
         self.avg_steering = 0.0
 
@@ -106,36 +74,40 @@ class CoreNode(Node):
         self.ground_speed_m_s = 0.0
         self.latitude = 0.0
         self.longitude = 0.0
+        self.heading_deg = 0.0
+        self.compass_heading = 0.0
 
         self.rc_subscription = self.create_subscription(RcInput, self.topic_rc_input, self.rc_callback, 10)
         self.command_subscription = self.create_subscription(Command, self.topic_command, self.command_callback, 10)
         self.gnss_subscription = self.create_subscription(Gnss, self.topic_gnss, self.gnss_callback, 10)
         self.malfunction_subscription = self.create_subscription(Malfunction, self.topic_malfunction, self.malfunction_callback, 10)
         self.emergency_subscription = self.create_subscription(Emergency, self.topic_emergency, self.emergency_callback, 10)
-        self.average_steering_subscription = self.create_subscription(Float32, "/robot/average_steering", self.avg_steering_callback, 10)
-        
+        self.average_steering_subscription = self.create_subscription(Float32, self.topic_average_steering, self.avg_steering_callback, 10)
+        self.compass_subscription = self.create_subscription(Compass, self.topic_compass, self.compass_callback, 10)
 
         self.relay_publisher = self.create_publisher(RobotRelay, self.topic_relay, 10)
         self.steer_publisher = self.create_publisher(Steer, self.topic_steer, 10)
         self.hubmotor_publisher = self.create_publisher(HubMotor, self.topic_hub_motor, 10)
         self.brake_publisher = self.create_publisher(Brake, self.topic_brake, 10)
 
-        self.mission_puller = self.create_client(MissionGet,"/database/mission_get")
+        self.mission_puller = self.create_client(MissionGet, self.topic_mission_get)
 
         self.create_timer(1.0/self.update_hz, self.update)
 
         self.get_logger().info("Robot Core up and running.")
 
 
-
     def update(self) -> None:
-        if self.robot_state == RobotState.MISSION:
+        if self.robot_state == RobotState.MALFUNTION:
+            self.stop_everything()
+        elif self.robot_state == RobotState.EMERGENCY:
+            self.stop_everything()
+        elif self.robot_state == RobotState.MISSION:
             self.do_mission()
-
+        
         self.buzzer.update()
-        
 
-        
+
     def rc_callback(self, msg: RcInput) -> None:
 
         if msg.connected:
@@ -146,19 +118,26 @@ class CoreNode(Node):
                 self.robot_state = RobotState.MANUAL
                 self.rc_throttle = self.clamp(0, self.throttle_input_max, msg.throttle)
                 self.rc_steering = self.clamp(-self.steer_input_max, self.steer_input_max, msg.steering)
-            else:
-                if self.robot_state != RobotState.MISSION:
-                    self.robot_state = RobotState.IDLE
-                self.rc_reverse = False
-                self.rc_throttle = 0
-                self.rc_steering = 0
 
-            self.publish_relay(self.rc_ignition, self.rc_reverse, self.back_energy)
-            self.publish_steer(self.rc_steering)
-            self.publish_hubmotor(self.rc_throttle)
-                    
+                self.publish_relay(self.rc_ignition, self.rc_reverse, self.back_energy)
+                self.publish_steer(self.rc_steering)
+                self.publish_hubmotor(self.rc_throttle)
+            else:
+                if self.robot_state == RobotState.MISSION:
+                    return
+                elif self.robot_state == RobotState.MANUAL:
+                    self.robot_state = RobotState.IDLE
+                    return
+
+                self.stop_everything()
         else:
             ... # do nothing
+
+
+    def stop_everything(self) -> None:
+        self.publish_relay(False, False, False)
+        self.publish_steer(0)
+        self.publish_hubmotor(0)
 
 
     def malfunction_callback(self, msg:Malfunction) -> None:
@@ -232,10 +211,15 @@ class CoreNode(Node):
         self.ground_speed_m_s = msg.ground_speed_m_s
         self.latitude = msg.latitude
         self.longitude = msg.longitude
+        self.heading_deg = msg.heading_deg
         
 
     def avg_steering_callback(self, avg_steering:Float32) -> None:
         self.avg_steering = float(avg_steering.data)
+
+
+    def compass_callback(self, msg: Compass) -> None:
+        self.compass_heading = float(msg.heading_deg)
 
 
     def publish_relay(self, ignition: bool, reverse: bool, back_energy: bool) -> None:
@@ -291,6 +275,7 @@ class CoreNode(Node):
     def clamp(self, min_val, max_val, value) -> int:
         """Clamp a value as int"""
         return max(min_val, min(max_val, value))
+    
 
     def destroy_node(self) -> bool:
         try:
