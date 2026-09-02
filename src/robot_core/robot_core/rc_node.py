@@ -35,7 +35,7 @@ class RCNode(Node):
         self.serial: Optional[serial.Serial] = None
         self.open_serial()
 
-        self.get_logger().info("Robot RC started.")
+        
 
 
     def open_serial(self) -> None:
@@ -45,9 +45,6 @@ class RCNode(Node):
                 self.serial_port,
                 self.serial_baud,
                 timeout=self.serial_timeout,
-            )
-            self.get_logger().info(
-                f"Opened RC serial port {self.serial_port} @ {self.serial_baud}"
             )
         except Exception as exc:
             self.serial = None

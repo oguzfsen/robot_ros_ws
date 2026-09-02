@@ -28,22 +28,22 @@ class SteerNode(Node):
         self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
         self.deadband_deg = float(_get_param(self, "deadband_deg", 2.0))
         self.encoder_timeout_sec = float(_get_param(self, "encoder_timeout_sec", 0.5))
-        self.encoder_zero_response_timeout_sec = float(
-            _get_param(self, "encoder_zero_response_timeout_sec", 2.0)
+        self.encoder_zero_db_serv_timeout = float(
+            _get_param(self, "encoder_zero_db_serv_timeout", 2.0)
         )
-        self.encoder_zero_startup_wait_sec = float(
-            _get_param(self, "encoder_zero_startup_wait_sec", 20.0)
-        )
+ 
         self.max_steer_angle_deg = float(_get_param(self, "max_steer_angle_deg", 60.0))
+        self.fake_pid = int(_get_param(self, "fake_pid", 10.0))
+        self.watchdog_frequency = float(_get_param(self, "watchdog_frequency", 10.0))
+        self.no_response_duration_s = float(_get_param(self, "no_response_duration_s", 3.0))
+        self.command_timeout_sec = float(_get_param(self, "command_timeout_sec", 0.5))
+        # Treat tiny encoder jitter as no movement for stall detection.
+        self.no_response_min_delta_deg = max(1.0, self.deadband_deg)
+
         self.drive_pulse_1 = int(_get_param(self, "drive_pulse_1", 3000))
         self.drive_pulse_2 = int(_get_param(self, "drive_pulse_2", 3000))
         self.drive_pulse_3 = int(_get_param(self, "drive_pulse_3", 3000))
         self.drive_pulse_4 = int(_get_param(self, "drive_pulse_4", 3000))
-        self.fake_pid = int(_get_param(self, "fake_pid", 10.0))
-        self.no_response_duration_s = float(_get_param(self, "no_response_duration_s", 3.0))
-        # Treat tiny encoder jitter as no movement for stall detection.
-        self.no_response_min_delta_deg = max(1.0, self.deadband_deg)
-
 
         self.front_left_forward_pin = int(_get_param(self, "front_left_forward_pin", 5))
         self.front_right_forward_pin = int(_get_param(self, "front_right_forward_pin", 1))
@@ -53,10 +53,13 @@ class SteerNode(Node):
         self.front_right_reverse_pin = int(_get_param(self, "front_right_reverse_pin", 0))
         self.rear_left_reverse_pin = int(_get_param(self, "rear_left_reverse_pin", 6))
         self.rear_right_reverse_pin = int(_get_param(self, "rear_right_reverse_pin", 2))
+
         self.database_listen_client = str(_get_param(self, "database_listen_client", "/database/encoder_zero_get"))
         self.encoder_listen_topic = str(_get_param(self, "encoder_listen_topic", "/robot/steering_encoders"))
         self.core_listen_topic = str(_get_param(self, "core_listen_topic", "/robot/steer"))
         self.malfunction_topic = str(_get_param(self, "malfunction_topic", "/robot/malfunction"))
+        self.watchdog_logged = False
+        self.last_command_time = time.monotonic()
 
         self.drive_pulses = [
             self.drive_pulse_1,
@@ -81,9 +84,9 @@ class SteerNode(Node):
 
         self.encoder_zero_client = self.create_client(EncoderZeroGet, self.database_listen_client)
         self._wait_for_service(self.encoder_zero_client)
-        self.encoder_zero_values = self.read_db_with_retry()
+        self.encoder_zero_values = self.read_db()
         self.get_logger().info(str(self.encoder_zero_values))
-        self.enabled = False
+
         self.target_angles = [0, 0, 0, 0]
         self.encoder_ready = False
         self.last_encoder_update_sec = 0.0
@@ -157,22 +160,28 @@ class SteerNode(Node):
             self.motor_pwm[motor_id] = 0
 
         self.control_timer = self.create_timer(1.0 / self.control_frequency, self.control_callback)
+        self.watchdog_timer = self.create_timer(1.0 / self.watchdog_frequency, self.watchdog_callback)
 
 
-        self.enc_pub_timer = self.create_timer(1.0, self.enc_pub_callback)
-        self.get_logger().info(
-            f"SteerNode started. control_frequency={self.control_frequency} Hz, "
-            f"pwm_frequency={self.pwm_frequency} Hz"
-        )
+        self.get_logger().info("SteerNode up and running")
+                               
 
-    def enc_pub_callback(self) -> None:
-        enc_deggree = [self.to_degree(x) for x in self.encoder_values]
-        enc_zero = [self.to_degree(x) for x in self.encoder_zero_values]
+    def watchdog_callback(self) -> None:
+        """Force steering motors to stop if commands stop arriving."""
 
-        enc_fark = [a - b for a, b in zip(enc_deggree, enc_zero)]
-        
-        enc_normal = [self.normalize_angle(x) for x in enc_fark]
-        # self.get_logger().info(str(enc_normal))
+        if (time.monotonic() - self.last_command_time) <= self.command_timeout_sec:
+            return
+
+
+        self.reset_all_motor_response_checks()
+        self.stop_all_motors()
+        self.start_next_i2c_write()
+
+        if not self.watchdog_logged:
+            self.get_logger().error(
+                "Hub motor command watchdog expired, forcing all motors to zero"
+            )
+            self.watchdog_logged = True
     
     def encoder_callback(self, encoder_values:Int32MultiArray) -> None:
         if len(encoder_values.data) < 4:
@@ -188,13 +197,13 @@ class SteerNode(Node):
 
 #region Steering
     def steer_callback(self, msg:Steer) -> None:
+        self.last_command_time = time.monotonic()
+        self.watchdog_logged = False
+
         if self.malfunction_active:
-            self.enabled = False
             self.stop_all_motors()
             self.start_next_i2c_write()
             return
-
-        self.enabled = bool(msg.enable)
         
         self.target_angles = [
             msg.front_left,
@@ -205,10 +214,6 @@ class SteerNode(Node):
         
         # (-100,+100) aralığından (-75,+75) aralığına map'lanıyor.
         self.target_angles = [self.map_range(x, -100, 100, -self.max_steer_angle_deg, self.max_steer_angle_deg) for x in self.target_angles]
-
-        if not self.enabled:
-            self.stop_all_motors()
-            self.start_next_i2c_write()
 
 
     def control_callback(self) -> None:
@@ -226,15 +231,11 @@ class SteerNode(Node):
             self.average_steering_publisher.publish(average_steering)
 
         if self.malfunction_active:
-            self.stop_all_motors()
-            self.start_next_i2c_write()
-            return
-
-        if not self.enabled:
             self.reset_all_motor_response_checks()
             self.stop_all_motors()
             self.start_next_i2c_write()
             return
+
 
         if not self.encoder_ready:
             if not self.waiting_for_encoder_logged:
@@ -444,7 +445,6 @@ class SteerNode(Node):
             return
 
         self.malfunction_active = True
-        self.enabled = False
         self.reset_all_motor_response_checks()
         self.stop_all_motors()
         self.start_next_i2c_write()
@@ -628,7 +628,7 @@ class SteerNode(Node):
         rclpy.spin_until_future_complete(
             self,
             future,
-            timeout_sec=self.encoder_zero_response_timeout_sec,
+            timeout_sec=self.encoder_zero_db_serv_timeout,
         )
 
         if not future.done():
@@ -659,27 +659,6 @@ class SteerNode(Node):
         
         return zero_values
 
-    def read_db_with_retry(self) -> List[int]:
-        deadline = time.monotonic() + max(1.0, self.encoder_zero_startup_wait_sec)
-        last_error: Exception | None = None
-        attempt = 0
-
-        while rclpy.ok() and time.monotonic() < deadline:
-            attempt += 1
-            try:
-                return self.read_db()
-            except Exception as exc:
-                last_error = exc
-                self.get_logger().warn(
-                    "Encoder zero service henuz cevap vermedi, tekrar denenecek: "
-                    f"attempt={attempt} error={exc}"
-                )
-                time.sleep(0.5)
-
-        raise RuntimeError(
-            "Encoder zero values could not be loaded during startup"
-            + (f": {last_error}" if last_error is not None else "")
-        )
 #endregion
 
 #region Helper Functions

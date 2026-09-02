@@ -39,8 +39,7 @@ class GnssRoverNode(Node):
         self.publish_period_s = float(
             _get_param(self, "publish_period_s", 0.1)
         )
-        self.log_period_s = float(_get_param(self, "log_period_s", 5.0))
-        self._last_log_time = 0.0
+        
         self.rtcm_log_period_s = float(_get_param(self, "rtcm_log_period_s", 2.0))
         self._last_rtcm_log_time = 0.0
         self._rtcm_frame_count = 0
@@ -65,9 +64,7 @@ class GnssRoverNode(Node):
         is_gnss_operational = False
         try:
             if self.gnss.connect():
-                self.get_logger().info("gnss rover device connected.")
                 if self.gnss.configure_rover():
-                    self.get_logger().info("gnss rover device configured.")
                     is_gnss_operational = True
                 else:
                     self.get_logger().warn(
@@ -78,12 +75,10 @@ class GnssRoverNode(Node):
                     "gnss rover device can not connected!!!"
                 )
         except Exception as exc:
-            self.get_logger().warn(f"gnss rover node startup failed: {exc}")
+            self.get_logger().error(f"gnss rover node startup failed: {exc}")
 
-        if is_gnss_operational:
-            self.get_logger().info("gnss_rover_node up and running...")
-        else:
-            self.get_logger().warn("gnss_rover_node down!!!")
+        if not is_gnss_operational:
+            self.get_logger().error("gnss_rover_node down!!!")
 
         self.create_timer(self.publish_period_s, self.publish_gnss_callback)
 
@@ -118,18 +113,7 @@ class GnssRoverNode(Node):
         msg.differential_solution = bool(pos["differential_solution"])
         self.gnss_pub.publish(msg)
 
-        now = time.monotonic()
-        if now - self._last_log_time >= self.log_period_s:
-            
-            self._last_log_time = now
-            #self.get_logger().info(
-            #    f"Mod: {msg.fix_type} | Uydu: {msg.satellite_count} "
-            #    f"| fix_type: {msg.fix_type}"
-            #    f"| Hassasiyet: {msg.accuracy_m} m "
-            #    f"| Hiz: {msg.ground_speed_m_s} m/s "
-            #    f"| Yon: {msg.heading_deg} deg | Enlem: {msg.latitude} "
-            #    f"| Boylam: {msg.longitude}"
-            #)
+
 
     def destroy_node(self):
         try:

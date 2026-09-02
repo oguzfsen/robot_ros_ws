@@ -50,8 +50,7 @@ class I2CSrvNode(Node):
                 f"I2C bus device not found: {self.default_bus_path}. "
                 "Enable I2C on Raspberry Pi or check the bus number."
             )
-        else:
-            self.get_logger().info(f"I2C bus device found: {self.default_bus_path}")
+        
 
         self.service = self.create_service(
             I2COperation,
@@ -59,7 +58,6 @@ class I2CSrvNode(Node):
             self.i2c_operation_callback
         )
 
-        self.get_logger().info("i2c_srv_node started. Service: /i2c/operation")
 
     def i2c_operation_callback(self, request: I2COperation.Request, response: I2COperation.Response):
         """

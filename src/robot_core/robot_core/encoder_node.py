@@ -15,11 +15,9 @@ class EncoderNode(Node):
         self.bus_id = int(_get_param(self, "bus_id", 1))
         self.device_name = str(_get_param(self, "device_name", "AS5600"))
         self.device_address = int(_get_param(self, "device_address", 0x36))
-
         self.use_mux = bool(_get_param(self, "use_mux", True))
         self.mux_address = int(_get_param(self, "mux_address", 0x70))
-
-        self.frequency = float(_get_param(self, "frequency", 10.0))
+        self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
 
         self.motor_channels = [
             int(_get_param(self, "motor1_sd", 7)),
@@ -38,20 +36,9 @@ class EncoderNode(Node):
 
         self._wait_for_service(self.i2c_client)
 
+        self.timer = self.create_timer(1.0 / self.control_frequency, self.timer_callback)
         self.publisher = self.create_publisher(Int32MultiArray, "/robot/steering_encoders", 10)
 
-        timer_period = 1.0 / self.frequency
-        self.timer = self.create_timer(timer_period, self.timer_callback)
-
-        self.publish_timer = self.create_timer(2, self.publish_encoder_values)
-        self.publish_waiting = False
-
-        self.get_logger().info("encoder_node started")
-
-    def publish_encoder_values(self) -> None:
-        self.publish_waiting = True
-        
-    
     def _wait_for_service(self, client) -> None:
         while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info(
@@ -109,10 +96,6 @@ class EncoderNode(Node):
             msg = Int32MultiArray()
             msg.data = self.pending_values
             self.publisher.publish(msg)
-
-            if self.publish_waiting:
-                # self.get_logger().info(str(self.pending_values))
-                self.publish_waiting = False
 
             self.pending_values = []
             self.current_mux_channel = None

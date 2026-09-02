@@ -14,7 +14,7 @@ import time
 import rclpy
 from rclpy.node import Node
 
-from robot_interfaces.msg import HubMotor
+from robot_interfaces.msg import HubMotor, Gnss
 from robot_interfaces.srv import I2COperation
 from robot_core.Tools import _get_param
 
@@ -30,6 +30,7 @@ class HubMotorNode(Node):
         super().__init__("hubmotor_node", automatically_declare_parameters_from_overrides=True)
 
         self.topic_name = str(_get_param(self, "topic", "/robot/hub_motor"))
+        self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
         self.device_name = str(_get_param(self, "device_name", "mcp4725"))
         self.bus_id = int(_get_param(self, "bus_id", 1))
         self.use_mux = bool(_get_param(self, "use_mux", True))
@@ -39,15 +40,14 @@ class HubMotorNode(Node):
         self.min_dac_value = int(_get_param(self, "min_dac_value", 0))
         self.max_dac_value = int(_get_param(self, "max_dac_value", 4095))
         self.max_power_percentage = int(_get_param(self, "max_power_percentage", 100))
-        self.control_frequency = float(_get_param(self, "control_frequency", 1.0))
         self.command_timeout_sec = float(_get_param(self, "command_timeout_sec", 0.5))
         self.watchdog_frequency = float(_get_param(self, "watchdog_frequency", 10.0))
-
+        self.speed_limit = float(_get_param(self, "speed_limit", 1.5))
         self.min_dac_value = self.clamp(0, 4095, self.min_dac_value)
         self.max_dac_value = self.clamp(self.min_dac_value, 4095, self.max_dac_value)
         self.max_power_percentage = self.clamp(0, 100, self.max_power_percentage)
         self.command_timeout_sec = max(0.1, self.command_timeout_sec)
-        self.watchdog_frequency = max(1.0, self.watchdog_frequency)
+
 
         self.motor_order = [
             "front_left",
@@ -98,47 +98,51 @@ class HubMotorNode(Node):
             self.hubmotor_callback,
             10
         )
-        self.control_timer = self.create_timer(1.0 / self.control_frequency, self.control_callback)
+        
         self.watchdog_timer = self.create_timer(1.0 / self.watchdog_frequency, self.watchdog_callback)
 
-        self.get_logger().info("hubmotor_node started")
+        self.gnss: Gnss | None = None
+        self.gnss_subscription = self.create_subscription(Gnss, self.topic_gnss, self.gnss_callback, 10)
 
+
+    def gnss_callback(self, msg: Gnss) -> None:
+        self.gnss = msg
 
 #region Power Management
     def hubmotor_callback(self, msg: HubMotor) -> None:
         """Store the latest hub motor targets from the incoming message."""
         self.last_command_time = time.monotonic()
         self.watchdog_logged = False
-        self.enabled = bool(msg.enable)
 
-        if not self.enabled:
-            self.stop_all_motors()
-            self.start_next_i2c_write()
-            return
 
-        self.set_motor_power("front_left", int(msg.front_left))
-        self.set_motor_power("front_right", int(msg.front_right))
-        self.set_motor_power("rear_left", int(msg.rear_left))
-        self.set_motor_power("rear_right", int(msg.rear_right))
+        if self.is_too_fast():
+            self.set_motor_power("front_left", 0)
+            self.set_motor_power("front_right", 0)
+            self.set_motor_power("rear_left", 0)
+            self.set_motor_power("rear_right", 0)
+        else:
+            self.set_motor_power("front_left", int(msg.front_left))
+            self.set_motor_power("front_right", int(msg.front_right))
+            self.set_motor_power("rear_left", int(msg.rear_left))
+            self.set_motor_power("rear_right", int(msg.rear_right))
 
         self.start_next_i2c_write()
 
+    def is_too_fast(self) -> bool:
+        if self.gnss.ground_speed_m_s > self.speed_limit:
+            return True
+        return False
+
     def control_callback(self) -> None:
         """Process pending DAC writes in the timer loop."""
-        if not self.enabled:
-            self.stop_all_motors()
-
         self.start_next_i2c_write()
 
     def watchdog_callback(self) -> None:
         """Force hub motors to zero if commands stop arriving."""
-        if not self.enabled:
-            return
 
         if (time.monotonic() - self.last_command_time) <= self.command_timeout_sec:
             return
 
-        self.enabled = False
         self.stop_all_motors()
         self.start_next_i2c_write()
 
@@ -199,9 +203,7 @@ class HubMotorNode(Node):
         for motor_name in self.motor_order:
             detected_address = self.detect_motor_address(motor_name)
             self.motors[motor_name]["device_address"] = detected_address
-            self.get_logger().info(
-                f"{motor_name} MCP4725 address detected: {detected_address}"
-            )
+
 
     def detect_motor_address(self, motor_name: str) -> int:
         """Try both possible device addresses and return the first working one."""

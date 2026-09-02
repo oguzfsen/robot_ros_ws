@@ -1,5 +1,12 @@
-core_node:
+/**:
   ros__parameters:
+    # robot dimensions
+    wheelbase: 1.6
+    wheel_track: 1.4
+    wheel_diameter: 0.4
+
+    # robot deadbands
+    speed_limit: 1.5
     steer_input_deadband: 5
     steer_input_max: 100
     steer_max: 60
@@ -7,6 +14,14 @@ core_node:
     throttle_input_max: 100
     throttle_max: 60
 
+    # frequencies & timeouts
+    control_frequency: 10.0
+    publish_frequency: 10.0
+    watchdog_frequency: 1.0
+    command_timeout_sec: 0.5
+
+core_node:
+  ros__parameters:
     topic_rc_input: /rc/input
     topic_gnss: /robot/gnss
     topic_command: /user/command
@@ -20,15 +35,10 @@ core_node:
     topic_mission_get: /database/mission_get
     topic_compass: /robot/compass
 
-    compass_real_north_heading: 20.0
-    
-    update_hz: 10    
+    update_hz: 10
     buzzer_pin: 18
     led_pin: 23
 
-    wheelbase: 1.6
-    wheel_track: 1.4
-    wheel_diameter: 0.4
 
 relay_node:
   ros__parameters:
@@ -43,7 +53,6 @@ relay_node:
     active_low: true
     ignition_pin: 0
     topic_name: /robot/relay
-
 
     reverse_pin1: 1
     reverse_pin2: 2
@@ -72,7 +81,6 @@ encoder_node:
     device_address: 54
     use_mux: true
     mux_address: 112
-    frequency: 10
     motor1_sd: 4
     motor2_sd: 5
     motor3_sd: 6
@@ -89,10 +97,8 @@ steer_node:
     drive_pulse_3: 3000
     drive_pulse_4: 3000
     deadband_deg: 2.0
-    control_frequency: 10.0
     encoder_timeout_sec: 0.5
-    encoder_zero_response_timeout_sec: 2.0
-    encoder_zero_startup_wait_sec: 20.0
+    encoder_zero_db_serv_timeout: 5.0
     max_steer_angle_deg: 60.0
     fake_pid: 10.0 
     no_response_duration_s: 3.0
@@ -126,18 +132,16 @@ compass_node:
 hubmotor_node:
   ros__parameters:
     topic: /robot/hub_motor
+    topic_gnss: /robot/gnss
     device_name: mcp4725
     bus_id: 1
     min_dac_value: 0
     max_dac_value: 4095
-    control_frequency: 1.0
     use_mux: true
     mux_address: 113
     primary_address: 96
     secondary_address: 97
     max_power_percentage: 100
-    command_timeout_sec: 0.5
-    watchdog_frequency: 10.0
 
     front_left_mux_channel: 2
     front_right_mux_channel: 3
@@ -151,7 +155,6 @@ gnss_rover_node:
     serial_timeout_s: 0.2
     measurement_rate_hz: 10.0
     publish_period_s: 0.1
-    log_period_s: 5.0
     rtcm_topic: /station/rtcm
 
 signalr_node:

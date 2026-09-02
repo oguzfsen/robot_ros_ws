@@ -102,7 +102,7 @@ class SignalRNode(Node):
         self._rtcm_frame_count = 0
         self._last_status_log_time = 0.0
         self._last_status_error_log_time = 0.0
-        self._last_rtcm_log_time = 0.0
+        
 
         self.signalr_client = SignalRLongPollingClient(
             hub_url=self.hub_url,
@@ -119,7 +119,6 @@ class SignalRNode(Node):
 
         self.status_timer = self.create_timer(self.status_period_s, self.publish_status)
 
-        self.get_logger().info("signalr_node up and running...")
 
     def handle_signalr_message(self, signalr_topic: str, json_text: str) -> None:
         if signalr_topic == self.signalr_command_topic:
@@ -196,13 +195,6 @@ class SignalRNode(Node):
         self._publish_bytes(self.rtcm_pub, frame)
         self._rtcm_frame_count += 1
 
-        now = time.monotonic()
-        if now - self._last_rtcm_log_time >= 5.0:
-            self._last_rtcm_log_time = now
-            self.get_logger().info(
-                "SignalR RTCM /station/rtcm'e basildi: "
-                f"frame_count={self._rtcm_frame_count} bytes={len(frame)}"
-            )
 
     def _handle_command_message(self, payload_obj: dict[str, Any]) -> None:
         request_id = str(payload_obj.get("request_id", "")).strip()

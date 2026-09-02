@@ -66,7 +66,7 @@ class BrakeNode(Node):
         )
 
         self.ensure_serial()
-        self.get_logger().info("brake_node up and running")
+
 
     def brake_callback(self, msg: Brake) -> None:
         self.desired_brake = bool(msg.brake)
@@ -114,9 +114,6 @@ class BrakeNode(Node):
             timeout=self.serial_timeout_s,
             write_timeout=self.serial_timeout_s,
         )
-        self.get_logger().info(
-            f"Opened brake serial port {self.serial_port} @ {self.baudrate}"
-        )
 
         # Arduino resets when the port is opened.
         time.sleep(self.SERIAL_BOOT_WAIT_S)
@@ -132,11 +129,6 @@ class BrakeNode(Node):
             )
 
         status = self.read_status()
-        self.get_logger().info(
-            "Brake firmware ready: "
-            f"mode={status.mode} position={status.position} "
-            f"max={status.max_position} brake={status.brake}"
-        )
 
         if status.max_position != self.stroke_max:
             response = self.send_command(f"SETMAX {self.stroke_max}")

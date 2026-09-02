@@ -65,8 +65,6 @@ class DatabaseNode(Node):
             self.mission_progress_set_callback,
         )
 
-        self.get_logger().info("database_node started")
-
 
     def encoder_zero_get_callback(self, request, response):
         del request
@@ -307,10 +305,7 @@ class DatabaseNode(Node):
         conn.commit()
         conn.close()
 
-        if db_exists:
-            self.get_logger().info(f"Database checked: {self.db_path}")
-        else:
-            self.get_logger().info(f"Database created: {self.db_path}")
+
 
     def table_exists(self, cursor, table_name: str) -> bool:
         cursor.execute(

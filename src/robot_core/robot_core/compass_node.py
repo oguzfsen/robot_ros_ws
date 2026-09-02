@@ -55,8 +55,6 @@ class CompassNode(Node):
 
         self.configure_sensor()
 
-        self.get_logger().info("compass_node started")
-            
     
     def _wait_for_service(self, client) -> None:
         while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
@@ -72,7 +70,6 @@ class CompassNode(Node):
         self.write_register(self.REG_CONFIG_B, 0x20)
         self.write_register(self.REG_MODE, 0x00)
 
-        self.get_logger().info("Compass configured")
 
     def timer_callback(self) -> None:
         """

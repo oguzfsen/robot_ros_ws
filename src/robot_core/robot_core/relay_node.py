@@ -99,8 +99,6 @@ class RelayNode(Node):
 
         self.subscription = self.create_subscription(RobotRelay, self.topic_name, self.relay_callback, 10)
 
-        self.get_logger().info("relay_controller_node started")
-
 
     def _wait_for_service(self, client) -> None:
         while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
@@ -342,11 +340,6 @@ class RelayNode(Node):
                 self.last_alarm_lamp,
             ) = self.active_write_state
 
-            self.get_logger().info(
-                f"Relay updated: ignition={self.last_ignition}, "
-                f"reverse={self.last_reverse}, brake={self.last_brake}, "
-                f"back_energy={self.last_back_energy}, alarm_lamp={self.last_alarm_lamp}"
-            )
 
             self.active_write_state = None
             self.active_write_data_a = None

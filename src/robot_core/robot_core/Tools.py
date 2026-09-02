@@ -36,6 +36,15 @@ def clamp_int(value: int, minimum: int, maximum: int) -> int:
         raise ValueError("minimum cannot be greater than maximum")
     return min(max(value, minimum), maximum)
 
+def map_value(val: int, min_val: int, max_val: int,
+              target_min_val: int, target_max_val: int) -> int:
+    return int(
+        target_min_val
+        + (val - min_val)
+        * (target_max_val - target_min_val)
+        / (max_val - min_val)
+    )
+
 def _get_param(cls, name: str, default_value=None):
     """
     Generic ROS2 parameter reader.
