@@ -25,12 +25,12 @@ class RCNode(Node):
         self.serial_port = str(_get_param(self, "serial_port", "/dev/ttyUSB1"))
         self.serial_baud = int(_get_param(self, "serial_baud", 115200))        
         self.serial_timeout = float(_get_param(self, "serial_timeout", 0.5))        
-        self.read_hz = float(_get_param(self, "read_hz", 10.0))
-        self.topic_name = str(_get_param(self, "topic_name", "/rc/input"))
+        self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
+        self.topic_rc_input = str(_get_param(self, "topic_rc_input", "/rc/input"))
         self.last_msg = None
         
-        self.publisher = self.create_publisher(RcInput, self.topic_name, 10)
-        self.read_timer = self.create_timer(1 / self.read_hz, self.read_serial)
+        self.publisher = self.create_publisher(RcInput, self.topic_rc_input, 10)
+        self.read_timer = self.create_timer(1.0 / self.control_frequency, self.read_serial)
 
         self.serial: Optional[serial.Serial] = None
         self.open_serial()

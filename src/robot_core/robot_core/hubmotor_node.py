@@ -16,7 +16,7 @@ from rclpy.node import Node
 
 from robot_interfaces.msg import HubMotor, Gnss
 from robot_interfaces.srv import I2COperation
-from robot_core.Tools import _get_param
+from robot_core.Tools import _get_param, _wait_for_service, clamp_int
 
 
 class HubMotorNode(Node):
@@ -29,10 +29,9 @@ class HubMotorNode(Node):
         """Initialize parameters, I2C client, address detection, and timers."""
         super().__init__("hubmotor_node", automatically_declare_parameters_from_overrides=True)
 
-        self.topic_name = str(_get_param(self, "topic", "/robot/hub_motor"))
+        self.topic_hub_motor = str(_get_param(self, "topic_hub_motor", "/robot/hub_motor"))
         self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
         self.device_name = str(_get_param(self, "device_name", "mcp4725"))
-        self.bus_id = int(_get_param(self, "bus_id", 1))
         self.use_mux = bool(_get_param(self, "use_mux", True))
         self.mux_address = int(_get_param(self, "mux_address", 113))
         self.primary_address = int( _get_param(self, "primary_address", 96))
@@ -43,9 +42,9 @@ class HubMotorNode(Node):
         self.command_timeout_sec = float(_get_param(self, "command_timeout_sec", 0.5))
         self.watchdog_frequency = float(_get_param(self, "watchdog_frequency", 10.0))
         self.speed_limit = float(_get_param(self, "speed_limit", 1.5))
-        self.min_dac_value = self.clamp(0, 4095, self.min_dac_value)
-        self.max_dac_value = self.clamp(self.min_dac_value, 4095, self.max_dac_value)
-        self.max_power_percentage = self.clamp(0, 100, self.max_power_percentage)
+        self.min_dac_value = clamp_int(self.min_dac_value, 0, 4095)
+        self.max_dac_value = clamp_int(self.max_dac_value, self.min_dac_value, 4095)
+        self.max_power_percentage = clamp_int(self.max_power_percentage, 0, 100)
         self.command_timeout_sec = max(0.1, self.command_timeout_sec)
 
 
@@ -87,18 +86,12 @@ class HubMotorNode(Node):
         self.watchdog_logged = False
 
         self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
-        self._wait_for_service(self.i2c_client)
-
+        _wait_for_service(self, self.i2c_client)
+        
         self.detect_device_addresses()
         self.initialize_eeprom_to_zero()
 
-        self.subscription = self.create_subscription(
-            HubMotor,
-            self.topic_name,
-            self.hubmotor_callback,
-            10
-        )
-        
+        self.subscription = self.create_subscription(HubMotor, self.topic_hub_motor, self.hubmotor_callback, 10)
         self.watchdog_timer = self.create_timer(1.0 / self.watchdog_frequency, self.watchdog_callback)
 
         self.gnss: Gnss | None = None
@@ -147,7 +140,7 @@ class HubMotorNode(Node):
         self.start_next_i2c_write()
 
         if not self.watchdog_logged:
-            self.get_logger().error(
+            self.get_logger().warning(
                 "Hub motor command watchdog expired, forcing all motors to zero"
             )
             self.watchdog_logged = True
@@ -179,12 +172,12 @@ class HubMotorNode(Node):
 
         The DAC output is treated as a throttle magnitude. Zero means stop.
         """
-        limited_power = self.clamp(-100, 100, raw_power)
+        limited_power = clamp_int(raw_power, -100, 100)
         return abs(limited_power)
 
     def power_percentage_to_dac_value(self, power_percentage: int) -> int:
         """Map a 0..100 power percentage to a DAC value."""
-        power_percentage = self.clamp(0, 100, power_percentage)
+        power_percentage = clamp_int(power_percentage, 0, 100)
 
         if power_percentage == 0:
             return 0
@@ -193,7 +186,7 @@ class HubMotorNode(Node):
         dac_range = self.max_dac_value - self.min_dac_value
         dac_value = self.min_dac_value + int(round(dac_range * allowed_power / 100.0))
 
-        return self.clamp(0, 4095, dac_value)
+        return clamp_int(dac_value, 0, 4095)
 
 #endregion
 
@@ -241,7 +234,7 @@ class HubMotorNode(Node):
         """Build one I2C write request for the selected motor."""
         request = I2COperation.Request()
         request.device_name = self.device_name
-        request.bus_id = self.bus_id
+        request.bus_id = 1
         request.use_mux = self.use_mux
         request.mux_address = self.mux_address if self.use_mux else 0
         request.mux_channel = self.motors[motor_name]["mux_channel"] if self.use_mux else 0
@@ -254,7 +247,7 @@ class HubMotorNode(Node):
 
     def build_mcp4725_payload(self, dac_value: int) -> list[int]:
         """Split a 12-bit DAC value into two MCP4725 data bytes."""
-        dac_value = self.clamp(0, 4095, dac_value)
+        dac_value = clamp_int(dac_value, 0, 4095)
         return [
             (dac_value >> 4) & 0xFF,
             (dac_value & 0x0F) << 4,
@@ -342,20 +335,7 @@ class HubMotorNode(Node):
             self.start_next_i2c_write()
 
         except Exception as ex:
-            self.get_logger().error(f"Hub motor I2C write failed: {ex}")
-
-#endregion
-
-#region Helper Functions
-    def _wait_for_service(self, client) -> None:
-        while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                "Waiting for I2C manager service..."
-            )
-
-    def clamp(self, min_value: int, max_value: int, value: int) -> int:
-        """Clamp an integer into the given range."""
-        return max(min_value, min(max_value, value))
+            self.get_logger().warning(f"Hub motor I2C write failed: {ex}")
 
 #endregion
 
@@ -374,7 +354,7 @@ def main(args=None) -> None:
         try:
             node.stop_all_motors_sync()
         except Exception as ex:
-            node.get_logger().error(f"Failed to stop hub motors on shutdown: {ex}")
+            node.get_logger().warning(f"Failed to stop hub motors on shutdown: {ex}")
         node.destroy_node()
         rclpy.shutdown()
 

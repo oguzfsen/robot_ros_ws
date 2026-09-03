@@ -14,7 +14,7 @@ from rclpy.node import Node
 
 from robot_interfaces.msg import RobotRelay
 from robot_interfaces.srv import I2COperation
-from robot_core.Tools import _get_param
+from robot_core.Tools import _get_param, _wait_for_service
 
 
 class RelayNode(Node):
@@ -38,7 +38,6 @@ class RelayNode(Node):
         """
         super().__init__("relay_node", automatically_declare_parameters_from_overrides=True)
 
-        self.bus_id = int(_get_param(self, "bus_id", 1))
         self.device_name = str(_get_param(self, "device_name", "sx1509_gpio"))
         self.device_address = int(_get_param(self, "device_address", 0x3E))
 
@@ -46,10 +45,8 @@ class RelayNode(Node):
         self.mux_address = int(_get_param(self, "mux_address", 0))
         self.mux_channel = int(_get_param(self, "mux_channel", 0))
 
-        self.active_low = bool(_get_param(self, "active_low", True))
-
         self.ignition_pin = int(_get_param(self, "ignition_pin", 0))
-        self.topic_name = str(_get_param(self, "topic_name", "/robot/relay"))
+        self.topic_relay = str(_get_param(self, "topic_relay", "/robot/relay"))
 
         self.reverse_pins = [
             int(_get_param(self, "reverse_pin1", 1)),
@@ -70,6 +67,9 @@ class RelayNode(Node):
             self.alarm_lamp_pin,
         ]
 
+        self.bus_id = 1
+        self.active_low = True
+
         self.last_ignition = None
         self.last_reverse = None
         self.last_brake = None
@@ -86,25 +86,19 @@ class RelayNode(Node):
         self.dir_a = 0xFF
         self.dir_b = 0xFF
 
-        self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
         self.pending_write_future = None
         self.active_write_state = None
         self.active_write_data_a = None
         self.active_write_data_b = None
 
-        self._wait_for_service(self.i2c_client)
+        self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
+        _wait_for_service(self, self.i2c_client)
 
         self.configure_outputs()
         self.write_all_outputs_safe()
 
-        self.subscription = self.create_subscription(RobotRelay, self.topic_name, self.relay_callback, 10)
+        self.subscription = self.create_subscription(RobotRelay, self.topic_relay, self.relay_callback, 10)
 
-
-    def _wait_for_service(self, client) -> None:
-        while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                "Waiting for I2C manager service..."
-            )
 
     def relay_callback(self, msg: RobotRelay) -> None:
         """

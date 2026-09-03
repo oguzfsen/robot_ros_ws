@@ -5,7 +5,7 @@ from rclpy.node import Node
 from std_msgs.msg import Int32MultiArray
 
 from robot_interfaces.srv import I2COperation
-from robot_core.Tools import _get_param
+from robot_core.Tools import _get_param, _wait_for_service
 
 
 class EncoderNode(Node):
@@ -18,32 +18,28 @@ class EncoderNode(Node):
         self.use_mux = bool(_get_param(self, "use_mux", True))
         self.mux_address = int(_get_param(self, "mux_address", 0x70))
         self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
+        self.topic_encoder = str(_get_param(self, "topic_encoder", "/robot/encoder"))
 
-        self.motor_channels = [
-            int(_get_param(self, "motor1_sd", 7)),
-            int(_get_param(self, "motor2_sd", 6)),
-            int(_get_param(self, "motor3_sd", 4)),
-            int(_get_param(self, "motor4_sd", 5)),
+        self.encoder_pins = [
+            int(_get_param(self, "encoder1", 4)),
+            int(_get_param(self, "encoder2", 5)),
+            int(_get_param(self, "encoder3", 6)),
+            int(_get_param(self, "encoder4", 7)),
         ]
 
         self.angle_high_register = 0x0C
 
-        self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
         self.pending_read_future = None
         self.pending_channels = []
         self.pending_values = []
         self.current_mux_channel = None
 
-        self._wait_for_service(self.i2c_client)
+        self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
+        _wait_for_service(self, self.i2c_client)
 
         self.timer = self.create_timer(1.0 / self.control_frequency, self.timer_callback)
-        self.publisher = self.create_publisher(Int32MultiArray, "/robot/steering_encoders", 10)
+        self.publisher = self.create_publisher(Int32MultiArray, self.topic_encoder, 10)
 
-    def _wait_for_service(self, client) -> None:
-        while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                "Waiting for I2C manager service..."
-            )
 
 
     def read_raw_angle_async(self, mux_channel: int):
@@ -145,7 +141,7 @@ class EncoderNode(Node):
         if self.pending_read_future is not None or self.current_mux_channel is not None:
             return
 
-        self.pending_channels = list(self.motor_channels)
+        self.pending_channels = list(self.encoder_pins)
         self.pending_values = []
         self.start_next_encoder_read()
 

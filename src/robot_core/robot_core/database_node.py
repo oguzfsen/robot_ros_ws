@@ -70,6 +70,7 @@ class DatabaseNode(Node):
         del request
 
         try:
+            self.get_logger().info(">>> EncoderZeroGet CALLBACK'E GIRDI")
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 

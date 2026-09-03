@@ -6,7 +6,7 @@ from std_msgs.msg import Float32, Int32MultiArray
 
 from robot_interfaces.msg import Steer, Malfunction
 from robot_interfaces.srv import I2COperation, EncoderZeroGet
-from robot_core.Tools import _get_param
+from robot_core.Tools import _get_param, _wait_for_service
 from typing import List
 import time
 
@@ -22,17 +22,16 @@ class SteerNode(Node):
         super().__init__("steer_node", automatically_declare_parameters_from_overrides=True)
 
         self.device_name = str(_get_param(self, "device_name", "pca9685_pwm"))
-        self.bus_id = int(_get_param(self, "bus_id", 1))
         self.device_address = int(_get_param(self, "device_address", 0x40))
-        self.pwm_frequency = float(_get_param(self, "frequency", 50.0))
+        self.pwm_frequency = float(_get_param(self, "pwm_frequency", 50.0))
         self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
         self.deadband_deg = float(_get_param(self, "deadband_deg", 2.0))
         self.encoder_timeout_sec = float(_get_param(self, "encoder_timeout_sec", 0.5))
         self.encoder_zero_db_serv_timeout = float(
-            _get_param(self, "encoder_zero_db_serv_timeout", 2.0)
+            _get_param(self, "encoder_zero_db_serv_timeout", 5.0)
         )
  
-        self.max_steer_angle_deg = float(_get_param(self, "max_steer_angle_deg", 60.0))
+        self.max_steer_angle_deg = float(_get_param(self, "max_steer_angle_deg", 30.0))
         self.fake_pid = int(_get_param(self, "fake_pid", 10.0))
         self.watchdog_frequency = float(_get_param(self, "watchdog_frequency", 10.0))
         self.no_response_duration_s = float(_get_param(self, "no_response_duration_s", 3.0))
@@ -45,19 +44,20 @@ class SteerNode(Node):
         self.drive_pulse_3 = int(_get_param(self, "drive_pulse_3", 3000))
         self.drive_pulse_4 = int(_get_param(self, "drive_pulse_4", 3000))
 
-        self.front_left_forward_pin = int(_get_param(self, "front_left_forward_pin", 5))
-        self.front_right_forward_pin = int(_get_param(self, "front_right_forward_pin", 1))
-        self.rear_left_forward_pin = int(_get_param(self, "rear_left_forward_pin", 7))
-        self.rear_right_forward_pin = int(_get_param(self, "rear_right_forward_pin", 3))
-        self.front_left_reverse_pin = int(_get_param(self, "front_left_reverse_pin", 4))
-        self.front_right_reverse_pin = int(_get_param(self, "front_right_reverse_pin", 0))
-        self.rear_left_reverse_pin = int(_get_param(self, "rear_left_reverse_pin", 6))
-        self.rear_right_reverse_pin = int(_get_param(self, "rear_right_reverse_pin", 2))
+        self.steer_front_left_reverse = int(_get_param(self, "steer_front_left_reverse", 5))
+        self.steer_front_left_forward = int(_get_param(self, "steer_front_left_forward", 4))
+        self.steer_front_right_reverse = int(_get_param(self, "steer_front_right_reverse", 1))
+        self.steer_front_right_forward = int(_get_param(self, "steer_front_right_forward", 0))
+        self.steer_rear_left_reverse = int(_get_param(self, "steer_rear_left_reverse", 7))
+        self.steer_rear_left_forward = int(_get_param(self, "steer_rear_left_forward", 6))
+        self.steer_rear_right_reverse = int(_get_param(self, "steer_rear_right_reverse", 3))
+        self.steer_rear_right_forward = int(_get_param(self, "steer_rear_right_forward", 2))
 
-        self.database_listen_client = str(_get_param(self, "database_listen_client", "/database/encoder_zero_get"))
-        self.encoder_listen_topic = str(_get_param(self, "encoder_listen_topic", "/robot/steering_encoders"))
-        self.core_listen_topic = str(_get_param(self, "core_listen_topic", "/robot/steer"))
-        self.malfunction_topic = str(_get_param(self, "malfunction_topic", "/robot/malfunction"))
+        self.topic_encoder = str(_get_param(self, "topic_encoder", "/robot/encoder"))
+        self.topic_steer = str(_get_param(self, "topic_steer", "/robot/steer"))
+        self.topic_malfunction = str(_get_param(self, "topic_malfunction", "/robot/malfunction"))
+        self.topic_enc_zero_get = str(_get_param(self, "topic_enc_zero_get", "/database/encoder_zero_get"))
+        self.topic_average_steering = str(_get_param(self, "topic_average_steering", "/robot/average_steering"))
         self.watchdog_logged = False
         self.last_command_time = time.monotonic()
 
@@ -82,8 +82,9 @@ class SteerNode(Node):
             4: 0,
         }
 
-        self.encoder_zero_client = self.create_client(EncoderZeroGet, self.database_listen_client)
-        self._wait_for_service(self.encoder_zero_client)
+        self.encoder_zero_client = self.create_client(EncoderZeroGet, self.topic_enc_zero_get)
+        _wait_for_service(self, self.encoder_zero_client)
+
         self.encoder_zero_values = self.read_db()
         self.get_logger().info(str(self.encoder_zero_values))
 
@@ -104,39 +105,39 @@ class SteerNode(Node):
         }
 
         self.encoder_values = []
-        self.enc_subs = self.create_subscription(Int32MultiArray, self.encoder_listen_topic, self.encoder_callback, 10)
-        self.steer_subs = self.create_subscription(Steer, self.core_listen_topic, self.steer_callback, 10)
-        self.mulfunction_publisher = self.create_publisher(Malfunction, self.malfunction_topic, 10)
-        self.average_steering_publisher = self.create_publisher(Float32, "/robot/average_steering", 10)
+        self.enc_subs = self.create_subscription(Int32MultiArray, self.topic_encoder, self.encoder_callback, 10)
+        self.steer_subs = self.create_subscription(Steer, self.topic_steer, self.steer_callback, 10)
+        self.mulfunction_publisher = self.create_publisher(Malfunction, self.topic_malfunction, 10)
+        self.average_steering_publisher = self.create_publisher(Float32, self.topic_average_steering, 10)
 
 
         self.motor_pins = {
             1: {
-                "reverse": self.front_left_reverse_pin,
-                "forward": self.front_left_forward_pin,
+                "reverse": self.steer_front_left_reverse,
+                "forward": self.steer_front_left_forward,
             },
             2: {
-                "reverse": self.front_right_reverse_pin,
-                "forward": self.front_right_forward_pin,
+                "reverse": self.steer_front_right_reverse,
+                "forward": self.steer_front_right_forward,
             },
             3: {
-                "reverse": self.rear_left_reverse_pin,
-                "forward": self.rear_left_forward_pin,
+                "reverse": self.steer_rear_left_reverse,
+                "forward": self.steer_rear_left_forward,
             },
             4: {
-                "reverse": self.rear_right_reverse_pin,
-                "forward": self.rear_right_forward_pin,
+                "reverse": self.steer_rear_right_reverse,
+                "forward": self.steer_rear_right_forward,
             },
         }
         self.pwm_channels = [
-            self.front_left_forward_pin,
-            self.front_left_reverse_pin,
-            self.front_right_forward_pin,
-            self.front_right_reverse_pin,
-            self.rear_left_forward_pin,
-            self.rear_left_reverse_pin,
-            self.rear_right_forward_pin,
-            self.rear_right_reverse_pin,
+            self.steer_front_left_reverse,
+            self.steer_front_left_forward,
+            self.steer_front_right_reverse,
+            self.steer_front_right_forward,
+            self.steer_rear_left_reverse,
+            self.steer_rear_left_forward,
+            self.steer_rear_right_reverse,
+            self.steer_rear_right_forward,
         ]
 
         self.desired_channel_payloads = {
@@ -152,7 +153,7 @@ class SteerNode(Node):
         self.active_i2c_payload = None
 
         self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
-        self._wait_for_service(self.i2c_client)
+        _wait_for_service(self, self.i2c_client)
         
         self.init_pca9685(self.pwm_frequency)
         for motor_id in range(1, 5):
@@ -178,7 +179,7 @@ class SteerNode(Node):
         self.start_next_i2c_write()
 
         if not self.watchdog_logged:
-            self.get_logger().error(
+            self.get_logger().warning(
                 "Hub motor command watchdog expired, forcing all motors to zero"
             )
             self.watchdog_logged = True
@@ -212,8 +213,6 @@ class SteerNode(Node):
             msg.rear_right
         ]
         
-        # (-100,+100) aralığından (-75,+75) aralığına map'lanıyor.
-        self.target_angles = [self.map_range(x, -100, 100, -self.max_steer_angle_deg, self.max_steer_angle_deg) for x in self.target_angles]
 
 
     def control_callback(self) -> None:
@@ -269,9 +268,9 @@ class SteerNode(Node):
 
 
     def steer_to_angle(self, motor_id: int, target_deg: int) -> None:
-        if not (-90 <= target_deg <= 90):
+        if not (-self.max_steer_angle_deg <= target_deg <= self.max_steer_angle_deg):
             self.get_logger().warn(
-                f"Motor {motor_id}: target {target_deg}° out of safe range [-90, 90], skipping"
+                f"Motor {motor_id}: target {target_deg}° out of safe range [-{self.max_steer_angle_deg}, {self.max_steer_angle_deg}], skipping"
             )
             return
 
@@ -281,7 +280,7 @@ class SteerNode(Node):
         enc_angle = self.to_degree(raw_enc)
         zero_angle = self.to_degree(raw_zero)
 
-        current_deg = self.normalize_angle(enc_angle - zero_angle)
+        current_deg = self.normalize_angle(zero_angle - enc_angle)
         error_deg = self.normalize_angle(target_deg - current_deg)
 
         if error_deg < -self.deadband_deg:
@@ -494,7 +493,7 @@ class SteerNode(Node):
     def build_i2c_write_request(self, register_address: int, payload: list[int]) -> I2COperation.Request:
         req = I2COperation.Request()
         req.device_name = self.device_name
-        req.bus_id = self.bus_id
+        req.bus_id = 1
         req.use_mux = False
         req.mux_address = 0
         req.mux_channel = 0
@@ -624,6 +623,7 @@ class SteerNode(Node):
             RuntimeError: If the zero values cannot be read.
         """
         request = EncoderZeroGet.Request()
+        self.get_logger().info(">>> EncoderZeroGet REQUEST GONDERILIYOR")
         future = self.encoder_zero_client.call_async(request)
         rclpy.spin_until_future_complete(
             self,
@@ -661,14 +661,7 @@ class SteerNode(Node):
 
 #endregion
 
-#region Helper Functions
-    
-    def _wait_for_service(self, client) -> None:
-        while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                f"Waiting for service: {client.srv_name}"
-            )
-    
+#region Helper Functions    
     def map_range(self, value: int,
                 in_min: int, in_max: int,
                 out_min: int, out_max: int) -> int:

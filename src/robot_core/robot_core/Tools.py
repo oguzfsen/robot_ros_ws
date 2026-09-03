@@ -5,6 +5,7 @@ from datetime import datetime
 from datetime import datetime as dt
 from typing import Optional
 
+import rclpy
 from rclpy.parameter import Parameter
 
 
@@ -95,3 +96,9 @@ def _get_param(cls, name: str, default_value=None):
         pass
 
     return default_value
+
+def _wait_for_service(node, client) -> None:
+    while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
+        node.get_logger().info(
+            f"Waiting for service: {client.srv_name}"
+        )

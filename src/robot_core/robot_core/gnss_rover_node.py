@@ -14,45 +14,21 @@ from robot_core.gnss_controller import GnssController
 
 class GnssRoverNode(Node):
     def __init__(self):
-        super().__init__(
-            "gnss_rover_node",
-            automatically_declare_parameters_from_overrides=True,
-        )
+        super().__init__("gnss_rover_node", automatically_declare_parameters_from_overrides=True)
 
-        self.serial_port = str(
-            _get_param(
-                self,
-                "serial_port",
-                (
-                    "/dev/serial/by-id/"
-                    "usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"
-                ),
-            )
-        )
+        self.serial_port = str(_get_param(self, "serial_port", ("/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"),))
         self.baudrate = int(_get_param(self, "baudrate", 460800))
-        self.serial_timeout_s = float(
-            _get_param(self, "serial_timeout_s", 0.2)
-        )
-        self.measurement_rate_hz = float(
-            _get_param(self, "measurement_rate_hz", 10.0)
-        )
-        self.publish_period_s = float(
-            _get_param(self, "publish_period_s", 0.1)
-        )
-        
+        self.serial_timeout_s = float(_get_param(self, "serial_timeout_s", 0.2))
+        self.measurement_rate_hz = float(_get_param(self, "measurement_rate_hz", 10.0))
+        self.publish_period_s = float(_get_param(self, "publish_period_s", 0.1))
         self.rtcm_log_period_s = float(_get_param(self, "rtcm_log_period_s", 2.0))
         self._last_rtcm_log_time = 0.0
         self._rtcm_frame_count = 0
+        self.topic_rtcm = str(_get_param(self, "topic_rtcm", "/station/rtcm"))
+        self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
 
-        self.rtcm_topic = str(_get_param(self, "rtcm_topic", "/station/rtcm"))
-        self.rtcm_sub = self.create_subscription(
-            UInt8MultiArray,
-            self.rtcm_topic,
-            self.rtcm_callback,
-            10,
-        )
-
-        self.gnss_pub = self.create_publisher(Gnss, "/robot/gnss", 10)
+        self.rtcm_sub = self.create_subscription(UInt8MultiArray, self.topic_rtcm, self.rtcm_callback, 10)
+        self.gnss_pub = self.create_publisher(Gnss, self.topic_gnss, 10)
 
         self.gnss = GnssController(
             self.serial_port,
@@ -61,11 +37,17 @@ class GnssRoverNode(Node):
             measurement_rate_hz=self.measurement_rate_hz,
         )
 
-        is_gnss_operational = False
+        if not self.is_gnss_operational():
+            self.get_logger().error("gnss_rover_node down!!!")
+
+        self.create_timer(self.publish_period_s, self.publish_gnss_callback)
+
+
+    def is_gnss_operational(self) -> bool:
         try:
             if self.gnss.connect():
                 if self.gnss.configure_rover():
-                    is_gnss_operational = True
+                    return True
                 else:
                     self.get_logger().warn(
                         "gnss rover device can not configured!!!"
@@ -77,10 +59,6 @@ class GnssRoverNode(Node):
         except Exception as exc:
             self.get_logger().error(f"gnss rover node startup failed: {exc}")
 
-        if not is_gnss_operational:
-            self.get_logger().error("gnss_rover_node down!!!")
-
-        self.create_timer(self.publish_period_s, self.publish_gnss_callback)
 
     def rtcm_callback(self, msg: UInt8MultiArray) -> None:
         payload = bytes(msg.data)

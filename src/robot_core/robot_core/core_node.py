@@ -26,12 +26,12 @@ class CoreNode(Node):
     def __init__(self) -> None:
         super().__init__("core_node", automatically_declare_parameters_from_overrides=True,)
 
-        self.steer_input_deadband = int(_get_param(self, "steer_input_deadband", 5))
-        self.steer_input_max = int(_get_param(self, "steer_input_max", 100))
-        self.steer_max = int(_get_param(self, "steer_max", 60))
-        self.throttle_deadband = int(_get_param(self, "throttle_deadband", 10))
+        self.throttle_deadband = int(_get_param(self, "throttle_deadband", 5))
         self.throttle_input_max = int(_get_param(self, "throttle_input_max", 100))
         self.throttle_max = int(_get_param(self, "throttle_max", 60))
+        self.steer_input_deadband = int(_get_param(self, "steer_input_deadband", 5))
+        self.steer_input_max = int(_get_param(self, "steer_input_max", 100)) # (-100 ile +100 arası)
+        self.steer_max = int(_get_param(self, "steer_max", 60))
 
         self.topic_rc_input = str(_get_param(self, "topic_rc_input", "/rc/input"))
         self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
@@ -46,15 +46,14 @@ class CoreNode(Node):
         self.topic_mission_get = str(_get_param(self, "topic_mission_get", "/database/mission_get"))
         self.topic_compass = str(_get_param(self, "topic_compass", "/robot/compass"))
         
-        self.update_hz = int(_get_param(self, "update_hz", 10))        
+        self.control_frequency = int(_get_param(self, "control_frequency", 10))
         buzzer_gpio = int(_get_param(self, "buzzer_pin", 18))
-        led_gpio = int(_get_param(self, "led_pin", 23))
+        led_pin = int(_get_param(self, "led_pin", 23))
 
         self.wheelbase = float(_get_param(self, "wheelbase", 1.6))
         self.wheel_track = float(_get_param(self, "wheel_track", 1.4))
         self.wheel_diameter = float(_get_param(self, "wheel_diameter", 0.4)) # tekerlek çapı
         self.ackermann = Ackermann(self.wheelbase, self.wheel_track, self.wheel_diameter)
-
 
         self.buzzer = Buzzer(buzzer_gpio)
         self.mission = None
@@ -88,7 +87,7 @@ class CoreNode(Node):
 
         self.mission_puller = self.create_client(MissionGet, self.topic_mission_get)
 
-        self.create_timer(1.0/self.update_hz, self.update)
+        self.create_timer(1.0/self.control_frequency, self.update)
 
     def update(self) -> None:
         if self.robot_state == RobotState.MALFUNTION:
@@ -121,15 +120,17 @@ class CoreNode(Node):
         self.rc_ignition = msg.ignition == 1
         self.rc_reverse = msg.reverse == 2
 
-        if msg.throttle < self.throttle_deadband:
+        if msg.throttle <= self.throttle_deadband:
             self.rc_throttle = 0
         else:
-            self.rc_throttle = map_value(msg.throttle, 0, 100, 0, self.throttle_input_max)
+            self.rc_throttle = clamp_int(self.rc_throttle, 0, self.throttle_input_max)
+            self.rc_throttle = map_value(msg.throttle, 0, self.throttle_input_max, 0, self.throttle_max)
 
-        if msg.steering < self.steer_input_deadband and msg.steering > -self.steer_input_deadband:
+        if msg.steering <= self.steer_input_deadband and msg.steering >= -self.steer_input_deadband:
             self.rc_steering = 0
         else:
-            self.rc_steering = map_value(msg.steering, -100, 100, -self.steer_input_max, self.steer_input_max)
+            self.rc_steering = clamp_int(self.rc_steering, -self.steer_input_max, self.steer_input_max)
+            self.rc_steering = map_value(msg.steering, -self.steer_input_max, self.steer_input_max, -self.steer_max, self.steer_max)
         
         # rc arm oldu, KOŞULSUZ manual moda geç
         if self.rc_ignition:
@@ -265,10 +266,10 @@ class CoreNode(Node):
     def publish_steer(self, steer: int) -> None:
         steer_msg = Steer()
         steer_msg.header.stamp = self.get_clock().now().to_msg()
-        steer_msg.front_left = -steer
-        steer_msg.front_right = -steer
-        steer_msg.rear_left = steer
-        steer_msg.rear_right = steer
+        steer_msg.front_left = steer
+        steer_msg.front_right = steer
+        steer_msg.rear_left = -steer
+        steer_msg.rear_right = -steer
 
         self.steer_publisher.publish(steer_msg)
 

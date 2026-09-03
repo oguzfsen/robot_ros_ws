@@ -15,7 +15,7 @@ from std_msgs.msg import Int32
 from std_msgs.msg import UInt8MultiArray
 
 from robot_core.Mission import Mission
-from robot_core.Tools import RobotState, _get_param
+from robot_core.Tools import RobotState, _get_param, _wait_for_service
 from robot_core.signalr_client import SignalRLongPollingClient
 
 
@@ -37,62 +37,26 @@ class SignalRNode(Node):
         self.poll_timeout_s = float(_get_param(self, "poll_timeout_s", 15.0))
         self.http_timeout_s = float(_get_param(self, "http_timeout_s", 15.0))
         self.status_period_s = float(_get_param(self, "status_period_s", 1.0))
-        self.status_send_wait_s = float(_get_param(self, "status_send_wait_s", 0.0))
         self.robot_id = str(_get_param(self, "robot_id", "UTAEMBOT"))
 
-        self.state_topic = str(_get_param(self, "state_topic", "/robot/state"))
-        self.gnss_topic = str(_get_param(self, "gnss_topic", "/robot/gnss"))
-        self.mission_state_topic = str(
-            _get_param(self, "mission_state_topic", "/robot/mission_state")
-        )
-        self.command_topic = str(_get_param(self, "command_topic", "/user/command"))
-        self.rtcm_topic = str(_get_param(self, "rtcm_topic", "/station/rtcm"))
-        self.status_topic = str(_get_param(self, "status_topic", "/robot/status"))
-        self.database_mission_set_service = str(
-            _get_param(self, "database_mission_set_service", "/database/mission_set")
-        )
+        self.topic_state = str(_get_param(self, "topic_state", "/robot/state"))
+        self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
+        self.topic_rtcm = str(_get_param(self, "topic_rtcm", "/station/rtcm"))
+        self.topic_command = str(_get_param(self, "topic_command", "/user/command"))
+        self.topic_mission = str(_get_param(self, "topic_mission", "/user/mission"))
+        self.topic_mission_state = str(_get_param(self, "topic_mission_state", "/robot/mission_state"))
+        self.topic_status = str(_get_param(self, "topic_status", "/robot/status"))
+        self.topic_mission_set = str(_get_param(self, "topic_mission_set", "/database/mission_set"))
 
-        self.signalr_command_topic = str(
-            _get_param(self, "signalr_command_topic", "/user/command")
-        )
-        self.signalr_mission_topic = str(
-            _get_param(self, "signalr_mission_topic", "/user/mission")
-        )
-        self.signalr_status_topic = str(
-            _get_param(self, "signalr_status_topic", "/robot/status")
-        )
-        self.signalr_rtcm_topic = str(
-            _get_param(self, "signalr_rtcm_topic", "/station/rtcm")
-        )
-        self.signalr_station_status_topic = str(
-            _get_param(self, "signalr_station_status_topic", "/station/status")
-        )
+        self.command_pub = self.create_publisher(Command, self.topic_command, 10)
+        self.rtcm_pub = self.create_publisher(UInt8MultiArray, self.topic_rtcm, 10)
+        self.status_pub = self.create_publisher(RobotStatus, self.topic_status, 10)
+        self.state_sub = self.create_subscription(Int32, self.topic_state, self.state_callback, 10)
+        self.gnss_sub = self.create_subscription(Gnss, self.topic_gnss, self.gnss_callback, 10)
+        self.mission_state_sub = self.create_subscription(MissionState, self.topic_mission_state, self.mission_state_callback, 10)
 
-        self.command_pub = self.create_publisher(Command, self.command_topic, 10)
-        self.rtcm_pub = self.create_publisher(UInt8MultiArray, self.rtcm_topic, 10)
-        self.status_pub = self.create_publisher(RobotStatus, self.status_topic, 10)
-        self.state_sub = self.create_subscription(
-            Int32,
-            self.state_topic,
-            self.state_callback,
-            10,
-        )
-        self.gnss_sub = self.create_subscription(
-            Gnss,
-            self.gnss_topic,
-            self.gnss_callback,
-            10,
-        )
-        self.mission_state_sub = self.create_subscription(
-            MissionState,
-            self.mission_state_topic,
-            self.mission_state_callback,
-            10,
-        )
-        self.mission_set_client = self.create_client(
-            MissionSet,
-            self.database_mission_set_service,
-        )
+        self.mission_set_client = self.create_client(MissionSet, self.topic_mission_set)
+        _wait_for_service(self, self.mission_set_client)
 
         self._state_lock = threading.Lock()
         self._pending_status_responses: list[dict[str, Any]] = []
@@ -121,28 +85,21 @@ class SignalRNode(Node):
 
 
     def handle_signalr_message(self, signalr_topic: str, json_text: str) -> None:
-        if signalr_topic == self.signalr_command_topic:
+        if signalr_topic == self.topic_command:
             self._handle_command_signalr_message(json_text)
             return
 
-        if signalr_topic == self.signalr_mission_topic:
+        if signalr_topic == self.topic_mission:
             self._handle_mission_signalr_message(json_text)
             return
 
-        if signalr_topic == self.signalr_rtcm_topic:
+        if signalr_topic == self.topic_rtcm:
             self._handle_rtcm_signalr_message(json_text)
             return
 
-        if signalr_topic in (
-            self.signalr_status_topic,
-            self.signalr_station_status_topic,
-        ):
-            return
-
-        self.get_logger().warn(f"Bilinmeyen SignalR topic geldi: {signalr_topic}")
 
     def _handle_command_signalr_message(self, json_text: str) -> None:
-        payload_obj = self._parse_json_object(json_text, self.signalr_command_topic)
+        payload_obj = self._parse_json_object(json_text, self.topic_command)
         if payload_obj is None:
             return
 
@@ -152,7 +109,7 @@ class SignalRNode(Node):
         self._handle_command_message(payload_obj)
 
     def _handle_mission_signalr_message(self, json_text: str) -> None:
-        payload_obj = self._parse_json_object(json_text, self.signalr_mission_topic)
+        payload_obj = self._parse_json_object(json_text, self.topic_mission)
         if payload_obj is None:
             return
 
@@ -162,7 +119,7 @@ class SignalRNode(Node):
         self._handle_mission_message(payload_obj)
 
     def _handle_rtcm_signalr_message(self, json_text: str) -> None:
-        payload_obj = self._parse_json_object(json_text, self.signalr_rtcm_topic)
+        payload_obj = self._parse_json_object(json_text, self.topic_rtcm)
         if payload_obj is None:
             return
 
@@ -279,9 +236,8 @@ class SignalRNode(Node):
                 separators=(",", ":"),
             )
             self.signalr_client.send_now(
-                self.signalr_status_topic,
-                json_text,
-                wait_for_connection_s=self.status_send_wait_s,
+                self.topic_status,
+                json_text                
             )
 
             now = time.monotonic()
@@ -327,17 +283,7 @@ class SignalRNode(Node):
 
         return json.dumps(payload, ensure_ascii=False)
 
-    def _store_mission_via_database_service(
-        self,
-        mission_id: int,
-        receive_date: str,
-        raw_json: str,
-    ) -> None:
-        if not self._wait_for_service(self.mission_set_client):
-            raise RuntimeError(
-                f"database mission service unavailable: {self.database_mission_set_service}"
-            )
-
+    def _store_mission_via_database_service(self, mission_id: int, receive_date: str, raw_json: str,) -> None:
         request = MissionSet.Request()
         request.mission_id = int(mission_id)
         request.receive_date = receive_date
@@ -358,6 +304,7 @@ class SignalRNode(Node):
 
         if not response.success:
             raise RuntimeError(response.error or "database mission_set failed")
+
 
     def _queue_status_response(
         self,
@@ -484,15 +431,6 @@ class SignalRNode(Node):
 
         return payload_obj
 
-    def _wait_for_service(self, client, timeout_sec: float = 1.0) -> bool:
-        start_time = time.monotonic()
-        while rclpy.ok() and not client.wait_for_service(timeout_sec=timeout_sec):
-            self.get_logger().warn(
-                f"Waiting for service: {self.database_mission_set_service}"
-            )
-            if time.monotonic() - start_time >= timeout_sec:
-                return False
-        return client.service_is_ready()
 
     @staticmethod
     def _utc_now_iso() -> str:

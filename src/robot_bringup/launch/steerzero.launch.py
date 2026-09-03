@@ -35,25 +35,12 @@ def generate_launch_description():
     steer_zero_node = Node(
             package="robot_core",
             executable="steer_zero_node",
+            parameters=[params]
     )
 
-    encoder_node =  Node(
-        package="robot_core",
-        executable="encoder_node",
-        parameters=[params]
-    )
-
-    i2c_srv_node = Node(
-        package="robot_core",
-        executable="i2c_srv_node",
-        parameters=[params]
-    )
     
-
-    ld.add_action(i2c_srv_node)
     ld.add_action(rc_node)
     ld.add_action(database_node)
-    ld.add_action(encoder_node)
     ld.add_action(steer_zero_node)
 
     return ld

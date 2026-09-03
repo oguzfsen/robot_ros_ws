@@ -14,7 +14,7 @@ from rclpy.node import Node
 
 from robot_interfaces.msg import Compass
 from robot_interfaces.srv import I2COperation
-from robot_core.Tools import RobotState, _get_param
+from robot_core.Tools import RobotState, _get_param, _wait_for_service
 
 
 class CompassNode(Node):
@@ -35,32 +35,25 @@ class CompassNode(Node):
         """
         super().__init__("compass_node", automatically_declare_parameters_from_overrides=True)
         
-        self.bus_id = int(_get_param(self, "bus_id", 1))
         self.device_name = str(_get_param(self, "device_name", "compass"))
         self.device_address = int(_get_param(self, "device_address", 0x1E))
         self.use_mux = bool(_get_param(self, "use_mux", False))
+        self.topic_compass = str(_get_param(self, "topic_compass", "/robot/compass"))
+        self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
         self.mux_address = 0
         self.mux_channel = 0
-        self.frequency = float(_get_param(self, "frequency", 10.0))
 
-        self.publisher = self.create_publisher(Compass, "/robot/compass", 10)
+        self.publisher = self.create_publisher(Compass, self.topic_compass, 10)
         self.pending_read_future = None
-
-        timer_period = 1.0 / self.frequency
-        self.timer = self.create_timer(timer_period, self.timer_callback)
+        
+        self.timer = self.create_timer(1.0 / self.control_frequency, self.timer_callback)
 
         self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
-
-        self._wait_for_service(self.i2c_client)
+        _wait_for_service(self, self.i2c_client)
 
         self.configure_sensor()
 
-    
-    def _wait_for_service(self, client) -> None:
-        while rclpy.ok() and not client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                "Waiting for I2C manager service..."
-            )
+
 
     def configure_sensor(self) -> None:
         """
@@ -102,7 +95,7 @@ class CompassNode(Node):
         request = I2COperation.Request()
 
         request.device_name = self.device_name
-        request.bus_id = self.bus_id
+        request.bus_id = 1
         request.use_mux = self.use_mux
         request.mux_address = self.mux_address
         request.mux_channel = self.mux_channel
@@ -171,7 +164,7 @@ class CompassNode(Node):
         request = I2COperation.Request()
 
         request.device_name = self.device_name
-        request.bus_id = self.bus_id
+        request.bus_id = 1
         request.use_mux = self.use_mux
         request.mux_address = self.mux_address
         request.mux_channel = self.mux_channel

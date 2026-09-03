@@ -38,7 +38,6 @@ setup(
             "signalr_node = robot_core.signalr_node:main",
             "steer_node = robot_core.steer_node:main",
             "steer_zero_node = robot_core.steer_zero_node:main",
-            "telemetry_node = robot_core.telemetry_node:main",
             
             "compass_listener_node = robot_core.listeners.compass_listener_node:main",
             "encoder_listener_node = robot_core.listeners.encoder_listener_node:main",

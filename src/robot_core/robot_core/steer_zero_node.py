@@ -10,8 +10,6 @@ database once per second.
 """
 
 import time
-from typing import Optional
-
 import rclpy
 from rclpy.node import Node
 from smbus2 import SMBus
@@ -19,6 +17,7 @@ from smbus2 import SMBus
 from robot_interfaces.msg import RcInput
 from robot_interfaces.srv import EncoderZeroSet
 from std_msgs.msg import Int32MultiArray
+from robot_core.Tools import _get_param, _wait_for_service
 
 
 class SteerZeroNode(Node):
@@ -42,71 +41,61 @@ class SteerZeroNode(Node):
     AS5600_RAW_LOW = 0x0D
 
     PWM_FREQUENCY = 50
-    BUS_ID = 1
 
-    STEERING_CENTER = 0
-    STEERING_DEADBAND = 8
-    MANUAL_PULSE = 2000
-
+    
     SAVE_INTERVAL_SEC = 1.0
 
     def __init__(self):
-        """
-        Initialize direct I2C access, RC subscriber, database client, and timers.
-        """
-        super().__init__(
-            "steer_zero_node",
-            automatically_declare_parameters_from_overrides=True
-        )
+        super().__init__("steer_zero_node", automatically_declare_parameters_from_overrides=True)
 
-        self.bus = SMBus(self.BUS_ID)
-        self.steering_center = int(self.declare_parameter(
-            "steering_center",
-            self.STEERING_CENTER
-        ).value)
-        self.steering_deadband = int(self.declare_parameter(
-            "steering_deadband",
-            self.STEERING_DEADBAND
-        ).value)
-        self.manual_pulse = int(self.declare_parameter(
-            "manual_pulse",
-            self.MANUAL_PULSE
-        ).value)
+        self.topic_enc_zero_set = str(_get_param(self, "topic_enc_zero_set", "/database/encoder_zero_set"))
+        self.steer_input_deadband = int(_get_param(self, "steer_input_deadband", 5))
+        self.steering_slow_pulse = int(_get_param(self, "steering_slow_pulse", 2000))
 
-        self.forward_pins = [4, 0, 6, 2]
-        self.reverse_pins = [5, 1, 7, 3]
-        self.encoder_mux_channels = [4, 5, 6, 7]
 
-        self.coming_encoder_values = None
+        self.steer_front_left_reverse = int(_get_param(self, "steer_front_left_reverse", 5))
+        self.steer_front_left_forward = int(_get_param(self, "steer_front_left_forward", 4))
+        self.steer_front_right_reverse = int(_get_param(self, "steer_front_right_reverse", 1))
+        self.steer_front_right_forward = int(_get_param(self, "steer_front_right_forward", 0))
+        self.steer_rear_left_reverse = int(_get_param(self, "steer_rear_left_reverse", 7))
+        self.steer_rear_left_forward = int(_get_param(self, "steer_rear_left_forward", 6))
+        self.steer_rear_right_reverse = int(_get_param(self, "steer_rear_right_reverse", 3))
+        self.steer_rear_right_forward = int(_get_param(self, "steer_rear_right_forward", 2))
 
-        self.last_rc: Optional[RcInput] = None
-        self.selected_motor_index: Optional[int] = None
+        self.forward_pins = [
+            self.steer_front_left_forward,
+            self.steer_front_right_forward,
+            self.steer_rear_left_forward,
+            self.steer_rear_right_forward]
+        
+        self.reverse_pins = [
+            self.steer_front_left_reverse,
+            self.steer_front_right_reverse,
+            self.steer_rear_left_reverse,
+            self.steer_rear_right_reverse]
+
+
+        self.encoder_pins = [
+            int(_get_param(self, "encoder1", 4)),
+            int(_get_param(self, "encoder2", 5)),
+            int(_get_param(self, "encoder3", 6)),
+            int(_get_param(self, "encoder4", 7)),
+        ]
+
+        self.steering_center = 0
+
+        self.bus = SMBus(1)
+        self.last_rc: RcInput | None = None
+        self.selected_motor_index: int | None = None
         self.last_saved_time = 0.0
 
-        self.encoder_zero_client = self.create_client(
-            EncoderZeroSet,
-            "/database/encoder_zero_set"
-        )
-
-        while not self.encoder_zero_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn("Waiting for /database/encoder_zero_set service...")
+        self.encoder_zero_client = self.create_client(EncoderZeroSet, self.topic_enc_zero_set)
+        _wait_for_service(self, self.encoder_zero_client)
 
         self.configure_pca9685()
         self.stop_all_motors()
 
-        self.rc_subscription = self.create_subscription(
-            RcInput,
-            "/rc/input",
-            self.rc_callback,
-            10
-        )
-
-        self.encoder_subscribtion = self.create_subscription(
-            Int32MultiArray, 
-            "/robot/steering_encoders",
-            self.encoder_subscribtion_callback,
-            10
-        )
+        self.rc_subscription = self.create_subscription(RcInput, "/rc/input", self.rc_callback, 10)
         self.timer = self.create_timer(0.05, self.timer_callback)
 
         self.get_logger().info("steer_zero_node started")
@@ -115,9 +104,6 @@ class SteerZeroNode(Node):
             "reverse<2=front, reverse==2=rear"
         )
     
-
-    def encoder_subscribtion_callback(self, msg: Int32MultiArray) -> None:
-        self.coming_encoder_values = list(msg.data)
 
     def rc_callback(self, msg: RcInput) -> None:
         """
@@ -176,7 +162,7 @@ class SteerZeroNode(Node):
             )
             self.last_saved_time = now
 
-    def select_motor_index(self, crab: int, reverse: int) -> Optional[int]:
+    def select_motor_index(self, crab: int, reverse: int) -> int | None:
         """
         Select steering motor index from RC switch values.
 
@@ -235,14 +221,14 @@ class SteerZeroNode(Node):
             if index != motor_index:
                 self.stop_motor(index)
 
-        if abs(error) <= self.steering_deadband:
+        if abs(error) <= self.steer_input_deadband:
             self.stop_motor(motor_index)
             return
 
         if error > 0:
-            self.drive_motor_forward(motor_index, self.manual_pulse)
+            self.drive_motor_forward(motor_index, self.steering_slow_pulse)
         else:
-            self.drive_motor_reverse(motor_index, self.manual_pulse)
+            self.drive_motor_reverse(motor_index, self.steering_slow_pulse)
 
     def read_encoder_raw(self, motor_index: int) -> int:
         """
@@ -254,9 +240,9 @@ class SteerZeroNode(Node):
         Returns:
             int: 12-bit AS5600 raw value.
         """
-        mux_channel = self.encoder_mux_channels[motor_index]
+        enc_pin = self.encoder_pins[motor_index]
 
-        self.select_mux_channel(mux_channel)
+        self.select_mux_channel(enc_pin)
 
         data = self.bus.read_i2c_block_data(
             self.AS5600_ADDRESS,
@@ -305,7 +291,6 @@ class SteerZeroNode(Node):
                 self.get_logger().info(
                     f"Saved zero: motor{motor_index + 1}, raw={raw_value}"
                 )
-                self.get_logger().info(str(self.coming_encoder_values))
             else:
                 self.get_logger().error(
                     f"Database save failed: {response.message}"
