@@ -32,6 +32,7 @@ setup(
             "gnss_rover_node = robot_core.gnss_rover_node:main",
             "hubmotor_node = robot_core.hubmotor_node:main",
             "i2c_srv_node = robot_core.i2c_srv_node:main",
+            "motion_node = robot_core.motion_node:main",
             "rc_node = robot_core.rc_node:main",
             "relay_node = robot_core.relay_node:main",
             "robot_cloud_node = robot_core.signalr_node:main",

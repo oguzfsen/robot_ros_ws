@@ -4,7 +4,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32, Int32MultiArray
 
-from robot_interfaces.msg import Steer, Malfunction
+from robot_interfaces.msg import Steer, Malfunction, Emergency
 from robot_interfaces.srv import I2COperation, EncoderZeroGet
 from robot_core.Tools import _get_param, _wait_for_service
 from typing import List
@@ -32,6 +32,9 @@ class SteerNode(Node):
         )
  
         self.max_steer_angle_deg = float(_get_param(self, "max_steer_angle_deg", 30.0))
+        self.steer_angle_safety_margin_deg = float(
+            _get_param(self, "steer_angle_safety_margin_deg", 5.0)
+        )
         self.fake_pid = int(_get_param(self, "fake_pid", 10.0))
         self.watchdog_frequency = float(_get_param(self, "watchdog_frequency", 10.0))
         self.no_response_duration_s = float(_get_param(self, "no_response_duration_s", 3.0))
@@ -56,6 +59,7 @@ class SteerNode(Node):
         self.topic_encoder = str(_get_param(self, "topic_encoder", "/robot/encoder"))
         self.topic_steer = str(_get_param(self, "topic_steer", "/robot/steer"))
         self.topic_malfunction = str(_get_param(self, "topic_malfunction", "/robot/malfunction"))
+        self.topic_emergency = str(_get_param(self, "topic_emergency", "/robot/emergency"))
         self.topic_enc_zero_get = str(_get_param(self, "topic_enc_zero_get", "/database/encoder_zero_get"))
         self.topic_average_steering = str(_get_param(self, "topic_average_steering", "/robot/average_steering"))
         self.watchdog_logged = False
@@ -104,10 +108,15 @@ class SteerNode(Node):
             for motor_id in range(1, 5)
         }
 
-        self.encoder_values = []
+        self.current_angles = [0, 0, 0, 0]
         self.enc_subs = self.create_subscription(Int32MultiArray, self.topic_encoder, self.encoder_callback, 10)
         self.steer_subs = self.create_subscription(Steer, self.topic_steer, self.steer_callback, 10)
-        self.mulfunction_publisher = self.create_publisher(Malfunction, self.topic_malfunction, 10)
+
+        self.malfunction_publisher = self.create_publisher(Malfunction, self.topic_malfunction, 10)
+        self.malfunction_subs = self.create_subscription(Malfunction, self.topic_malfunction, self.malfunction_callback, 10)
+        self.emergency_subs = self.create_subscription(Emergency, self.topic_emergency, self.emergency_callback, 10)
+
+
         self.average_steering_publisher = self.create_publisher(Float32, self.topic_average_steering, 10)
 
 
@@ -164,8 +173,22 @@ class SteerNode(Node):
         self.watchdog_timer = self.create_timer(1.0 / self.watchdog_frequency, self.watchdog_callback)
 
 
-        self.get_logger().info("SteerNode up and running")
-                               
+
+    def malfunction_callback(self, msg:Malfunction) -> None:
+        if msg.node_name != self.get_name():
+            self.malfunction_active = True
+            self.reset_all_motor_response_checks()
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+
+
+    def emergency_callback(self, msg:Emergency) -> None:
+        if msg.emergency:
+            self.emergency_active = True
+            self.reset_all_motor_response_checks()
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+        
 
     def watchdog_callback(self) -> None:
         """Force steering motors to stop if commands stop arriving."""
@@ -183,13 +206,23 @@ class SteerNode(Node):
                 "Hub motor command watchdog expired, forcing all motors to zero"
             )
             self.watchdog_logged = True
+
     
     def encoder_callback(self, encoder_values:Int32MultiArray) -> None:
         if len(encoder_values.data) < 4:
             self.get_logger().warn("Encoder message has fewer than 4 values")
             return
 
-        self.encoder_values = list(encoder_values.data[:4])
+        for motor_index in range(4):
+            raw_encoder = encoder_values.data[motor_index]
+            raw_zero = self.encoder_zero_values[motor_index]
+
+            encoder_angle = self.to_degree(raw_encoder)
+            zero_angle = self.to_degree(raw_zero)
+
+            current_angle = self.normalize_angle(zero_angle - encoder_angle)
+            self.current_angles[motor_index] = current_angle
+
         self.encoder_ready = True
         self.last_encoder_update_sec = time.monotonic()
         self.waiting_for_encoder_logged = False
@@ -206,26 +239,43 @@ class SteerNode(Node):
             self.start_next_i2c_write()
             return
         
-        self.target_angles = [
+        received_angles = [
             msg.front_left,
             msg.front_right,
             msg.rear_left,
             msg.rear_right
         ]
-        
+
+        for motor_index in range(4):
+            target_angle = received_angles[motor_index]
+
+            if target_angle > self.max_steer_angle_deg:
+                target_angle = self.max_steer_angle_deg
+            elif target_angle < -self.max_steer_angle_deg:
+                target_angle = -self.max_steer_angle_deg
+
+            self.target_angles[motor_index] = target_angle
 
 
     def control_callback(self) -> None:
         self.start_next_i2c_write()
 
         if self.encoder_ready:
-            steering_angles = [
-                self.normalize_angle(self.to_degree(raw) - self.to_degree(zero))
-                for raw, zero in zip(self.encoder_values[:2], self.encoder_zero_values[:2])
-            ]
+            front_left_angle = self.current_angles[0]
+            front_right_angle = self.current_angles[1]
+            rear_left_angle = self.current_angles[2]
+            rear_right_angle = self.current_angles[3]
+
+            average_angle = (
+                front_left_angle
+                + front_right_angle
+                - rear_left_angle
+                - rear_right_angle
+            ) / 4.0
+
             average_steering = Float32()
             average_steering.data = float(
-                max(-90.0, min(90.0, -sum(steering_angles) / len(steering_angles)))
+                max(-90.0, min(90.0, average_angle))
             )
             self.average_steering_publisher.publish(average_steering)
 
@@ -234,7 +284,6 @@ class SteerNode(Node):
             self.stop_all_motors()
             self.start_next_i2c_write()
             return
-
 
         if not self.encoder_ready:
             if not self.waiting_for_encoder_logged:
@@ -254,12 +303,13 @@ class SteerNode(Node):
             return
 
         try:
-            for motor_id, target_deg in enumerate(self.target_angles, start=1):
+            for motor_index in range(4):
+                motor_id = motor_index + 1
+                target_deg = self.target_angles[motor_index]
                 self.steer_to_angle(motor_id, target_deg)
-                if self.malfunction_active:
-                    self.start_next_i2c_write()
-                    return
+
             self.start_next_i2c_write()
+
         except Exception as ex:
             self.get_logger().error(f"Steering control error: {ex}")
             self.reset_all_motor_response_checks()
@@ -268,19 +318,26 @@ class SteerNode(Node):
 
 
     def steer_to_angle(self, motor_id: int, target_deg: int) -> None:
+        current_deg = self.current_angles[motor_id - 1]
+        angle_limit_deg = (
+            self.max_steer_angle_deg
+            + self.steer_angle_safety_margin_deg
+        )
+
+        if abs(current_deg) > angle_limit_deg:
+            self.trigger_malfunction(
+                "Steering angle limit exceeded: "
+                f"motor={motor_id} current_deg={current_deg} "
+                f"limit_deg={angle_limit_deg}"
+            )
+            return
+
         if not (-self.max_steer_angle_deg <= target_deg <= self.max_steer_angle_deg):
             self.get_logger().warn(
                 f"Motor {motor_id}: target {target_deg}° out of safe range [-{self.max_steer_angle_deg}, {self.max_steer_angle_deg}], skipping"
             )
             return
 
-        raw_enc = self.encoder_values[motor_id - 1]
-        raw_zero = self.encoder_zero_values[motor_id - 1]
-
-        enc_angle = self.to_degree(raw_enc)
-        zero_angle = self.to_degree(raw_zero)
-
-        current_deg = self.normalize_angle(zero_angle - enc_angle)
         error_deg = self.normalize_angle(target_deg - current_deg)
 
         if error_deg < -self.deadband_deg:
@@ -313,6 +370,7 @@ class SteerNode(Node):
 
     def normalize_angle(self, angle_deg: int) -> int:
         return (angle_deg + 180) % 360 - 180
+    
     
     def turn_left(self, motor_id: int, error_deg: int) -> None:
         drive_pulse = self.drive_pulses[motor_id - 1]
@@ -371,6 +429,7 @@ class SteerNode(Node):
         self.motor_state[motor_id] = "stop"
         self.motor_pwm[motor_id] = 0
 
+
     def check_motor_no_response(
         self,
         motor_id: int,
@@ -419,6 +478,7 @@ class SteerNode(Node):
             f"error_deg={error_deg} timeout_s={self.no_response_duration_s:.1f}"
         )
         return True
+    
 
     def reset_motor_response_check(
         self,
@@ -434,25 +494,27 @@ class SteerNode(Node):
         self.motor_response_state[motor_id]["last_angle_deg"] = current_deg
         self.motor_response_state[motor_id]["last_motion_sec"] = now_sec
 
+
     def reset_all_motor_response_checks(self) -> None:
         now_sec = time.monotonic()
         for motor_id in range(1, 5):
             self.reset_motor_response_check(motor_id, now_sec=now_sec)
+
 
     def trigger_malfunction(self, error: str) -> None:
         if self.malfunction_active:
             return
 
         self.malfunction_active = True
-        self.reset_all_motor_response_checks()
         self.stop_all_motors()
         self.start_next_i2c_write()
 
         msg = Malfunction()
         msg.header.stamp = self.get_clock().now().to_msg()
+        msg.node_name = self.get_name()
         msg.malfunction = True
         msg.error = error
-        self.mulfunction_publisher.publish(msg)
+        self.malfunction_publisher.publish(msg)
         self.get_logger().error(error)
 
 #endregion

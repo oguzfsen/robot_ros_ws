@@ -35,6 +35,7 @@
     topic_status: /robot/status
     topic_state: /robot/state
     topic_steer: /robot/steer
+    topic_motion: /robot/motion
 
     topic_command: /user/command
     topic_mission: /user/mission
@@ -108,7 +109,10 @@ steer_node:
     deadband_deg: 2.0
     encoder_timeout_sec: 0.5
     encoder_zero_db_serv_timeout: 5.0
-    max_steer_angle_deg: 30.0  # bu rc input değil gerçek açı sınırı koyuyor.
+    # bu rc input değil hem target hemde current açıya sınır koyuyor.
+    max_steer_angle_deg: 30.0
+    # yukarıdaki sınır + margin = 35 aşılırsa malfunction
+    steer_angle_safety_margin_deg: 5.0
     fake_pid: 10.0 
     no_response_duration_s: 3.0
 

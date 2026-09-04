@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/IncomingMessage.msg"
   "msg/Malfunction.msg"
   "msg/MissionState.msg"
+  "msg/Motion.msg"
   "msg/RcInput.msg"
   "msg/RobotRelay.msg"
   "msg/RobotStatus.msg"

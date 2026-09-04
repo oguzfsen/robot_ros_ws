@@ -6,20 +6,17 @@ from robot_interfaces.msg import (
     RcInput,
     Command,
     Gnss,
-    HubMotor,
-    RobotRelay,
-    Steer,
-    Brake,
     Malfunction,
     Emergency,
     Compass,
+    Motion
 )
 from robot_interfaces.srv import MissionGet
 from std_msgs.msg import Int32MultiArray, Float32
 from robot_core.Buzzer import Buzzer
 from robot_core.Tools import RobotState, _get_param, clamp_int, map_value
 from robot_core.Mission import Mission
-from robot_core.Ackermann import Ackermann
+
 
 class CoreNode(Node):
 
@@ -36,24 +33,17 @@ class CoreNode(Node):
         self.topic_rc_input = str(_get_param(self, "topic_rc_input", "/rc/input"))
         self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
         self.topic_command = str(_get_param(self, "topic_command", "/user/command"))        
-        self.topic_relay = str(_get_param(self, "topic_relay", "/robot/relay"))
-        self.topic_steer = str(_get_param(self, "topic_steer", "/robot/steer"))
-        self.topic_hub_motor = str(_get_param(self, "topic_hub_motor", "/robot/hub_motor"))
-        self.topic_brake = str(_get_param(self, "topic_brake", "/robot/brake"))
         self.topic_malfunction = str(_get_param(self, "topic_malfunction", "/robot/malfunction"))
         self.topic_emergency = str(_get_param(self, "topic_emergency", "/robot/emergency"))
         self.topic_average_steering = str(_get_param(self, "topic_average_steering", "/robot/average_steering"))
         self.topic_mission_get = str(_get_param(self, "topic_mission_get", "/database/mission_get"))
         self.topic_compass = str(_get_param(self, "topic_compass", "/robot/compass"))
+        self.topic_motion = str(_get_param(self, "topic_motion", "/robot/motion"))
         
         self.control_frequency = int(_get_param(self, "control_frequency", 10))
         buzzer_gpio = int(_get_param(self, "buzzer_pin", 18))
         led_pin = int(_get_param(self, "led_pin", 23))
 
-        self.wheelbase = float(_get_param(self, "wheelbase", 1.6))
-        self.wheel_track = float(_get_param(self, "wheel_track", 1.4))
-        self.wheel_diameter = float(_get_param(self, "wheel_diameter", 0.4)) # tekerlek çapı
-        self.ackermann = Ackermann(self.wheelbase, self.wheel_track, self.wheel_diameter)
 
         self.buzzer = Buzzer(buzzer_gpio)
         self.mission = None
@@ -67,6 +57,7 @@ class CoreNode(Node):
         self.back_energy = False
         self.avg_steering = 0.0
 
+        
         self.gnss: Gnss | None = None
         self.compass: Compass | None = None
 
@@ -80,57 +71,55 @@ class CoreNode(Node):
         self.average_steering_subscription = self.create_subscription(Float32, self.topic_average_steering, self.avg_steering_callback, 10)
         self.compass_subscription = self.create_subscription(Compass, self.topic_compass, self.compass_callback, 10)
 
-        self.relay_publisher = self.create_publisher(RobotRelay, self.topic_relay, 10)
-        self.steer_publisher = self.create_publisher(Steer, self.topic_steer, 10)
-        self.hubmotor_publisher = self.create_publisher(HubMotor, self.topic_hub_motor, 10)
-        self.brake_publisher = self.create_publisher(Brake, self.topic_brake, 10)
-
         self.mission_puller = self.create_client(MissionGet, self.topic_mission_get)
+
+        self.motion_publisher = self.create_publisher(Motion, self.topic_motion, 10)
 
         self.create_timer(1.0/self.control_frequency, self.update)
 
+
+
+
     def update(self) -> None:
         if self.robot_state == RobotState.MALFUNTION:
-            self.stop_everything()
+            ...
         elif self.robot_state == RobotState.EMERGENCY:
-            self.stop_everything()
+            ...
         elif self.robot_state == RobotState.MANUAL:
             self.manual_control()
         elif self.robot_state == RobotState.MISSION:
-            self.do_mission()
-        
-        
-        self.buzzer.update()
+            self.autonomous_control()
+
 
     def manual_control(self):
-        self.publish_relay(self.rc_ignition, self.rc_reverse, self.back_energy)
-        self.publish_steer(self.rc_steering)
-        self.publish_hubmotor(self.rc_throttle)
+        msg = Motion()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.arm = self.rc_ignition
+        msg.throttle = self.rc_throttle
+        msg.steering = self.rc_steering
+        msg.reverse = self.rc_reverse
+        self.motion_publisher.publish(msg)
 
+
+
+    def autonomous_control(self):
+        ...
+        # görevi auto_action_node servisine gönder ve action servisini başlat
+        # servis görev son noktaya ulaşınca bitecek.
+        # gerektiğinde servis acilen durdurulabilecek.
 
     def rc_callback(self, msg: RcInput) -> None:
 
         if not msg.connected:
             if self.robot_state == RobotState.MANUAL or self.robot_state == RobotState.MISSION:
                 self.robot_state == RobotState.IDLE
-                self.stop_everything()
             return
 
         # rc açık, tüm değerleri çek
         self.rc_ignition = msg.ignition == 1
         self.rc_reverse = msg.reverse == 2
 
-        if msg.throttle <= self.throttle_deadband:
-            self.rc_throttle = 0
-        else:
-            self.rc_throttle = clamp_int(self.rc_throttle, 0, self.throttle_input_max)
-            self.rc_throttle = map_value(msg.throttle, 0, self.throttle_input_max, 0, self.throttle_max)
-
-        if msg.steering <= self.steer_input_deadband and msg.steering >= -self.steer_input_deadband:
-            self.rc_steering = 0
-        else:
-            self.rc_steering = clamp_int(self.rc_steering, -self.steer_input_max, self.steer_input_max)
-            self.rc_steering = map_value(msg.steering, -self.steer_input_max, self.steer_input_max, -self.steer_max, self.steer_max)
+        self.fix_rc_values(msg.throttle, msg.steering)
         
         # rc arm oldu, KOŞULSUZ manual moda geç
         if self.rc_ignition:
@@ -140,8 +129,20 @@ class CoreNode(Node):
         # manual moddaydın ama arm kapandı        
         if self.robot_state == RobotState.MANUAL:
             self.robot_state = RobotState.IDLE
-            self.stop_everything()
             return
+
+    def fix_rc_values(self, throttle:int, steering:int):
+        if throttle <= self.throttle_deadband:
+            self.rc_throttle = 0
+        else:
+            self.rc_throttle = clamp_int(throttle, 0, self.throttle_input_max)
+            self.rc_throttle = map_value(self.rc_throttle, 0, self.throttle_input_max, 0, self.throttle_max)
+
+        if steering <= self.steer_input_deadband and steering >= -self.steer_input_deadband:
+            self.rc_steering = 0
+        else:
+            self.rc_steering = clamp_int(steering, -self.steer_input_max, self.steer_input_max)
+            self.rc_steering = map_value(self.rc_steering, -self.steer_input_max, self.steer_input_max, -self.steer_max, self.steer_max)
 
 
     def malfunction_callback(self, msg:Malfunction) -> None:
@@ -210,7 +211,7 @@ class CoreNode(Node):
             self.mission = Mission(
                 response.raw_json,
                 0.5,
-                # response.last_waypoint, # Baştan başlasın
+                0 # response.last_waypoint, # Baştan başlasın
             )
         except Exception as exc:
             self.get_logger().error(f"Mission nesnesi oluşturulamadı: {exc}")
@@ -243,59 +244,7 @@ class CoreNode(Node):
         self.avg_steering = float(avg_steering.data)
 
 
-    def stop_everything(self) -> None:
-        self.publish_relay(False, False, False)
-        self.publish_steer(0)
-        self.publish_hubmotor(0)
-
-
-    def publish_relay(self, ignition: bool, reverse: bool, back_energy: bool) -> None:
-        relay_msg = RobotRelay()
-        relay_msg.header.stamp = self.get_clock().now().to_msg()
-        relay_msg.ignition = ignition
-        relay_msg.reverse = reverse
-        relay_msg.back_energy = back_energy
-        relay_msg.brake = False
-        relay_msg.alarm_lamp = False
-        if self.robot_state == RobotState.MANUAL or self.robot_state == RobotState.MISSION:
-            relay_msg.alarm_lamp = True
-        
-        self.relay_publisher.publish(relay_msg)
-
-
-    def publish_steer(self, steer: int) -> None:
-        steer_msg = Steer()
-        steer_msg.header.stamp = self.get_clock().now().to_msg()
-        steer_msg.front_left = steer
-        steer_msg.front_right = steer
-        steer_msg.rear_left = -steer
-        steer_msg.rear_right = -steer
-
-        self.steer_publisher.publish(steer_msg)
-
-
-    def publish_hubmotor(self, throttle: int) -> None:
-
-        throttle1, throttle2, throttle3, throttle4 = self.ackermann.get_fixed(throttle, self.avg_steering)
-
-        hubmotor_msg = HubMotor()
-        hubmotor_msg.header.stamp = self.get_clock().now().to_msg()        
-        hubmotor_msg.front_left = throttle1
-        hubmotor_msg.front_right = throttle2
-        hubmotor_msg.rear_left = throttle3
-        hubmotor_msg.rear_right = throttle4
-
-        self.hubmotor_publisher.publish(hubmotor_msg)
-
-        if throttle < self.throttle_deadband:
-            self.brake = True
-        else:
-            self.brake = False
-
-        brake_msg = Brake()
-        brake_msg.header.stamp = self.get_clock().now().to_msg()
-        brake_msg.brake = self.brake
-        self.brake_publisher.publish(brake_msg)
+    
     
 
     def destroy_node(self) -> bool:
