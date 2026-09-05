@@ -1,0 +1,7 @@
+# Goal
+string mission_raw
+---
+# Result
+bool completed
+---
+# Feedback is intentionally empty. Mission progress is published separately.

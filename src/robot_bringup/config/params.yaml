@@ -17,8 +17,10 @@
     # frequencies & timeouts
     control_frequency: 10.0
     publish_frequency: 10.0
-    watchdog_frequency: 1.0
+    watchdog_frequency: 10.0
     command_timeout_sec: 0.5
+    encoder_timeout_sec: 0.5
+    encoder_malfunction_timeout: 5.0
 
     # topics
     topic_average_steering: /robot/average_steering
@@ -45,6 +47,9 @@
     topic_enc_zero_set: /database/encoder_zero_set
     topic_mission_get: /database/mission_get
     topic_mission_set: /database/mission_set
+
+    # actions
+    action_autonomous: /robot/autonomous
 
     # ortak pinler
     steer_front_left_reverse: 5
@@ -107,7 +112,6 @@ steer_node:
     drive_pulse_3: 3000
     drive_pulse_4: 3000
     deadband_deg: 2.0
-    encoder_timeout_sec: 0.5
     encoder_zero_db_serv_timeout: 5.0
     # bu rc input değil hem target hemde current açıya sınır koyuyor.
     max_steer_angle_deg: 30.0

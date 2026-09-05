@@ -14,7 +14,7 @@ import rclpy
 from rclpy.node import Node
 import serial
 
-from robot_interfaces.msg import Brake
+from robot_interfaces.msg import Brake, Malfunction
 from robot_core.Tools import _get_param
 
 
@@ -46,8 +46,10 @@ class BrakeNode(Node):
         self.serial_timeout_s = float(_get_param(self, "serial_timeout_s", 0.1))
         self.stroke_max = int(_get_param(self, "stroke_max", 250))
         self.topic_brake = str(_get_param(self, "topic_brake", "/robot/brake"))
+        self.topic_malfunction = str(_get_param(self, "topic_malfunction", "/robot/malfunction"))
 
         self.desired_brake = True
+        self.malfunction_active = False
         self.last_ping_time = 0.0
         self.last_connect_attempt_time = 0.0
         self.last_brake_command: Optional[bool] = None
@@ -64,11 +66,22 @@ class BrakeNode(Node):
             self.CONTROL_PERIOD_S,
             self.control_loop,
         )
+        self.malfunction_subs = self.create_subscription(
+            Malfunction,
+            self.topic_malfunction,
+            self.malfunction_callback,
+            10
+        )
 
         self.ensure_serial()
 
 
+
     def brake_callback(self, msg: Brake) -> None:
+        if self.malfunction_active:
+            self.desired_brake = True
+            return
+
         self.desired_brake = bool(msg.brake)
         if not self.desired_brake:
             self.last_ping_time = 0.0
@@ -79,10 +92,18 @@ class BrakeNode(Node):
 
         try:
             self.read_pending_lines()
+            if self.malfunction_active:
+                self.desired_brake = True
             self.sync_brake_state()
         except Exception as exc:
             self.get_logger().error(f"Brake control error: {exc}")
             self.close_serial()
+
+    def malfunction_callback(self, msg: Malfunction) -> None:
+        if msg.malfunction:
+            self.malfunction_active = True
+            self.desired_brake = True
+            self.control_loop()
 
     def ensure_serial(self) -> bool:
         if self.serial_conn is not None and self.serial_conn.is_open:

@@ -11,8 +11,7 @@ import rclpy
 from rclpy.node import Node
 from robot_interfaces.msg import Command, Gnss, MissionState, RobotStatus
 from robot_interfaces.srv import MissionSet
-from std_msgs.msg import Int32
-from std_msgs.msg import UInt8MultiArray
+from std_msgs.msg import Int32, UInt8MultiArray
 
 from robot_core.Mission import Mission
 from robot_core.Tools import RobotState, _get_param, _wait_for_service

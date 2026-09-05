@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            "auto_act_node = robot_core.auto_act_node:main",
             "brake_node = robot_core.brake_node:main",
             "compass_node = robot_core.compass_node:main",
             "core_node = robot_core.core_node:main",

@@ -14,7 +14,7 @@ import time
 import rclpy
 from rclpy.node import Node
 
-from robot_interfaces.msg import HubMotor, Gnss
+from robot_interfaces.msg import HubMotor, Gnss, Malfunction
 from robot_interfaces.srv import I2COperation
 from robot_core.Tools import _get_param, _wait_for_service, clamp_int
 
@@ -32,6 +32,8 @@ class HubMotorNode(Node):
         self.topic_hub_motor = str(_get_param(self, "topic_hub_motor", "/robot/hub_motor"))
         self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
         self.device_name = str(_get_param(self, "device_name", "mcp4725"))
+        self.topic_malfunction = str(_get_param(self, "topic_malfunction", "/robot/malfunction"))
+
         self.use_mux = bool(_get_param(self, "use_mux", True))
         self.mux_address = int(_get_param(self, "mux_address", 113))
         self.primary_address = int( _get_param(self, "primary_address", 96))
@@ -42,6 +44,10 @@ class HubMotorNode(Node):
         self.command_timeout_sec = float(_get_param(self, "command_timeout_sec", 0.5))
         self.watchdog_frequency = float(_get_param(self, "watchdog_frequency", 10.0))
         self.speed_limit = float(_get_param(self, "speed_limit", 1.5))
+        self.i2c_timeout_sec = float(_get_param(self, "encoder_timeout_sec", 0.5))
+        self.i2c_malfunction_timeout = float(
+            _get_param(self, "encoder_malfunction_timeout", 5.0)
+        )
         self.min_dac_value = clamp_int(self.min_dac_value, 0, 4095)
         self.max_dac_value = clamp_int(self.max_dac_value, self.min_dac_value, 4095)
         self.max_power_percentage = clamp_int(self.max_power_percentage, 0, 100)
@@ -84,12 +90,29 @@ class HubMotorNode(Node):
         self.active_dac_value = None
         self.last_command_time = time.monotonic()
         self.watchdog_logged = False
+        self.malfunction_active = False
+
+        self.i2c_error_start_sec = {
+            motor_name: None for motor_name in self.motor_order
+        }
+        self.i2c_timeout_logged = {
+            motor_name: False for motor_name in self.motor_order
+        }
+
+        self.malfunction_publisher = self.create_publisher(
+            Malfunction,
+            self.topic_malfunction,
+            10,
+        )
 
         self.i2c_client = self.create_client(I2COperation, "/i2c/operation")
         _wait_for_service(self, self.i2c_client)
-        
-        self.detect_device_addresses()
-        self.initialize_eeprom_to_zero()
+
+        try:
+            self.detect_device_addresses()
+            self.initialize_eeprom_to_zero()
+        except Exception as ex:
+            self.trigger_malfunction(f"Hub motor initialization failed: {ex}")
 
         self.subscription = self.create_subscription(HubMotor, self.topic_hub_motor, self.hubmotor_callback, 10)
         self.watchdog_timer = self.create_timer(1.0 / self.watchdog_frequency, self.watchdog_callback)
@@ -107,6 +130,10 @@ class HubMotorNode(Node):
         self.last_command_time = time.monotonic()
         self.watchdog_logged = False
 
+        if self.malfunction_active:
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+            return
 
         if self.is_too_fast():
             self.set_motor_power("front_left", 0)
@@ -122,12 +149,22 @@ class HubMotorNode(Node):
         self.start_next_i2c_write()
 
     def is_too_fast(self) -> bool:
-        if self.gnss.ground_speed_m_s > self.speed_limit:
-            return True
-        return False
+        if self.gnss is None:
+            return False
+
+        return (
+            self.gnss.speed_accuracy_m_s < 0.3
+            and self.gnss.ground_speed_m_s > self.speed_limit
+        )
 
     def control_callback(self) -> None:
         """Process pending DAC writes in the timer loop."""
+
+        if self.malfunction_active:
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+            return
+
         self.start_next_i2c_write()
 
     def watchdog_callback(self) -> None:
@@ -187,6 +224,55 @@ class HubMotorNode(Node):
         dac_value = self.min_dac_value + int(round(dac_range * allowed_power / 100.0))
 
         return clamp_int(dac_value, 0, 4095)
+
+    def trigger_malfunction(self, error: str) -> None:
+        if self.malfunction_active:
+            return
+
+        self.malfunction_active = True
+        self.stop_all_motors()
+        self.start_next_i2c_write()
+
+        msg = Malfunction()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.node_name = self.get_name()
+        msg.malfunction = True
+        msg.error = error
+        self.malfunction_publisher.publish(msg)
+        self.get_logger().error(error)
+
+    def reset_i2c_error_check(self, motor_name: str) -> None:
+        self.i2c_error_start_sec[motor_name] = None
+        self.i2c_timeout_logged[motor_name] = False
+
+    def handle_i2c_write_error(self, motor_name: str, error: str) -> None:
+        now_sec = time.monotonic()
+        error_start_sec = self.i2c_error_start_sec[motor_name]
+
+        if error_start_sec is None:
+            self.i2c_error_start_sec[motor_name] = now_sec
+            return
+
+        error_duration_sec = now_sec - error_start_sec
+
+        if error_duration_sec >= self.i2c_malfunction_timeout:
+            self.trigger_malfunction(
+                "Hub motor I2C not responding: "
+                f"motor={motor_name} "
+                f"timeout_s={self.i2c_malfunction_timeout:.1f} "
+                f"error={error}"
+            )
+            return
+
+        if (
+            error_duration_sec >= self.i2c_timeout_sec
+            and not self.i2c_timeout_logged[motor_name]
+        ):
+            self.get_logger().warning(
+                "Hub motor I2C write is temporarily unavailable: "
+                f"motor={motor_name} error={error}"
+            )
+            self.i2c_timeout_logged[motor_name] = True
 
 #endregion
 
@@ -309,6 +395,7 @@ class HubMotorNode(Node):
             applied_dac_value = self.applied_dac_values[motor_name]
 
             if desired_dac_value == applied_dac_value:
+                self.reset_i2c_error_check(motor_name)
                 continue
 
             self.active_motor_name = motor_name
@@ -331,11 +418,13 @@ class HubMotorNode(Node):
 
             if motor_name is not None and dac_value is not None:
                 self.applied_dac_values[motor_name] = dac_value
+                self.reset_i2c_error_check(motor_name)
 
             self.start_next_i2c_write()
 
         except Exception as ex:
-            self.get_logger().warning(f"Hub motor I2C write failed: {ex}")
+            if motor_name is not None:
+                self.handle_i2c_write_error(motor_name, str(ex))
 
 #endregion
 

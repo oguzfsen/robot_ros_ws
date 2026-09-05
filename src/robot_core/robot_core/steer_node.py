@@ -30,6 +30,7 @@ class SteerNode(Node):
         self.encoder_zero_db_serv_timeout = float(
             _get_param(self, "encoder_zero_db_serv_timeout", 5.0)
         )
+        self.encoder_malfunction_timeout = float(_get_param(self, "encoder_malfunction_timeout", 5.0))
  
         self.max_steer_angle_deg = float(_get_param(self, "max_steer_angle_deg", 30.0))
         self.steer_angle_safety_margin_deg = float(
@@ -58,12 +59,12 @@ class SteerNode(Node):
 
         self.topic_encoder = str(_get_param(self, "topic_encoder", "/robot/encoder"))
         self.topic_steer = str(_get_param(self, "topic_steer", "/robot/steer"))
-        self.topic_malfunction = str(_get_param(self, "topic_malfunction", "/robot/malfunction"))
-        self.topic_emergency = str(_get_param(self, "topic_emergency", "/robot/emergency"))
         self.topic_enc_zero_get = str(_get_param(self, "topic_enc_zero_get", "/database/encoder_zero_get"))
         self.topic_average_steering = str(_get_param(self, "topic_average_steering", "/robot/average_steering"))
+        self.topic_malfunction = str(_get_param(self, "topic_malfunction", "/robot/malfunction"))
         self.watchdog_logged = False
         self.last_command_time = time.monotonic()
+        self.stop_all = False
 
         self.drive_pulses = [
             self.drive_pulse_1,
@@ -94,7 +95,7 @@ class SteerNode(Node):
 
         self.target_angles = [0, 0, 0, 0]
         self.encoder_ready = False
-        self.last_encoder_update_sec = 0.0
+        self.last_encoder_update_sec = time.monotonic()
         self.waiting_for_encoder_logged = False
         self.encoder_timeout_logged = False
         self.malfunction_active = False
@@ -111,13 +112,8 @@ class SteerNode(Node):
         self.current_angles = [0, 0, 0, 0]
         self.enc_subs = self.create_subscription(Int32MultiArray, self.topic_encoder, self.encoder_callback, 10)
         self.steer_subs = self.create_subscription(Steer, self.topic_steer, self.steer_callback, 10)
-
-        self.malfunction_publisher = self.create_publisher(Malfunction, self.topic_malfunction, 10)
-        self.malfunction_subs = self.create_subscription(Malfunction, self.topic_malfunction, self.malfunction_callback, 10)
-        self.emergency_subs = self.create_subscription(Emergency, self.topic_emergency, self.emergency_callback, 10)
-
-
         self.average_steering_publisher = self.create_publisher(Float32, self.topic_average_steering, 10)
+        self.malfunction_publisher = self.create_publisher(Malfunction, self.topic_malfunction, 10)
 
 
         self.motor_pins = {
@@ -173,29 +169,11 @@ class SteerNode(Node):
         self.watchdog_timer = self.create_timer(1.0 / self.watchdog_frequency, self.watchdog_callback)
 
 
-
-    def malfunction_callback(self, msg:Malfunction) -> None:
-        if msg.node_name != self.get_name():
-            self.malfunction_active = True
-            self.reset_all_motor_response_checks()
-            self.stop_all_motors()
-            self.start_next_i2c_write()
-
-
-    def emergency_callback(self, msg:Emergency) -> None:
-        if msg.emergency:
-            self.emergency_active = True
-            self.reset_all_motor_response_checks()
-            self.stop_all_motors()
-            self.start_next_i2c_write()
-        
-
     def watchdog_callback(self) -> None:
         """Force steering motors to stop if commands stop arriving."""
 
         if (time.monotonic() - self.last_command_time) <= self.command_timeout_sec:
             return
-
 
         self.reset_all_motor_response_checks()
         self.stop_all_motors()
@@ -239,6 +217,13 @@ class SteerNode(Node):
             self.start_next_i2c_write()
             return
         
+        self.stop_all = msg.stop_all
+        if self.stop_all:
+            self.reset_all_motor_response_checks()
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+            return
+        
         received_angles = [
             msg.front_left,
             msg.front_right,
@@ -259,6 +244,11 @@ class SteerNode(Node):
 
     def control_callback(self) -> None:
         self.start_next_i2c_write()
+
+        if self.stop_all:
+            self.stop_all_motors()
+            self.start_next_i2c_write()
+            return
 
         if self.encoder_ready:
             front_left_angle = self.current_angles[0]
@@ -285,6 +275,13 @@ class SteerNode(Node):
             self.start_next_i2c_write()
             return
 
+        now = time.monotonic()
+        if now - self.last_encoder_update_sec > self.encoder_malfunction_timeout:
+            self.trigger_malfunction(
+                f"Encoder not responding for {self.encoder_malfunction_timeout:.1f} seconds"
+            )
+            return
+
         if not self.encoder_ready:
             if not self.waiting_for_encoder_logged:
                 self.get_logger().warn("Waiting for steering encoder data...")
@@ -292,7 +289,7 @@ class SteerNode(Node):
             self.reset_all_motor_response_checks()
             return
 
-        if (time.monotonic() - self.last_encoder_update_sec) > self.encoder_timeout_sec:
+        if now - self.last_encoder_update_sec > self.encoder_timeout_sec:
             if not self.encoder_timeout_logged:
                 self.get_logger().warn("Steering encoder data timed out")
                 self.encoder_timeout_logged = True
@@ -307,6 +304,9 @@ class SteerNode(Node):
                 motor_id = motor_index + 1
                 target_deg = self.target_angles[motor_index]
                 self.steer_to_angle(motor_id, target_deg)
+
+                if self.malfunction_active:
+                    break
 
             self.start_next_i2c_write()
 

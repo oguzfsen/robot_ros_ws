@@ -100,10 +100,16 @@ def generate_launch_description():
         parameters=[params]
     )
 
+    auto_act_node = Node(
+        package="robot_core",
+        executable="auto_act_node",
+        parameters=[params]
+    )
+
     motion_node = Node(
-            package="robot_core",
-            executable="motion_node",
-            parameters=[params]
+        package="robot_core",
+        executable="motion_node",
+        parameters=[params]
     )
 
     ld.add_action(i2c_srv_node)
@@ -118,6 +124,7 @@ def generate_launch_description():
     ld.add_action(gnss_rover_node)
     ld.add_action(signalr_node)
     ld.add_action(motion_node)
+    ld.add_action(auto_act_node)
     ld.add_action(core_node)
 
     return ld
