@@ -196,7 +196,8 @@ class CoreNode(Node):
         if command_type == "pause_mission":
             ...
         if command_type == "stop_mission":
-            ...
+            self.robot_state = RobotState.IDLE
+            self.cancel_autonomous_action()
         if command_type == "return_home":
             ...
         if command_type == "start_spraying":

@@ -9,8 +9,9 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
+from std_msgs.msg import Int32MultiArray, Float32, Int32
 from robot_interfaces.action import Autonomous
-from robot_interfaces.msg import MissionState
+from robot_interfaces.msg import MissionState, Gnss, Compass, RobotStatus
 from robot_core.Mission import Mission
 from robot_core.Tools import _get_param
 
@@ -23,25 +24,33 @@ class AutoActNode(Node):
             automatically_declare_parameters_from_overrides=True,
         )
 
-        self.action_autonomous = str(
-            _get_param(self, "action_autonomous", "/robot/autonomous")
-        )
-        self.topic_mission_state = str(
-            _get_param(self, "topic_mission_state", "/robot/mission_state")
-        )
+        self.action_autonomous = str(_get_param(self, "action_autonomous", "/robot/autonomous"))
+        self.topic_mission_state = str(_get_param(self, "topic_mission_state", "/robot/mission_state"))
         self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
+        self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
+        self.topic_compass = str(_get_param(self, "topic_compass", "/robot/compass"))
+
+
+        self.topic_average_steering = str(_get_param(self, "topic_average_steering", "/robot/average_steering"))
+
 
         self.mission: Mission | None = None
         self.goal_active = False
         self.shutdown_requested = False
         self.goal_lock = Lock()
 
-        self.mission_state_publisher = self.create_publisher(
-            MissionState,
-            self.topic_mission_state,
-            10,
-        )
+        self.gnss : Gnss | None = None
 
+
+        self.mission_state_publisher = self.create_publisher(MissionState, self.topic_mission_state, 10)
+        self.gnss_subs = self.create_subscription(Gnss, self.topic_gnss, self.gnss_callback, 10)
+        self.compass_subs = self.create_subscription(Compass, self.topic_gnss, self.gnss_callback, 10)
+        self.av_steer_subs = self.create_subscription(Float32, self.topic_average_steering, self.av_steer_callback, 10)
+
+        self.state_subs = self.create_publisher(Int32, self.topic_state, 10)
+        
+        
+        
         self.action_callback_group = ReentrantCallbackGroup()
         self.action_server = ActionServer(
             self,
@@ -53,11 +62,23 @@ class AutoActNode(Node):
             callback_group=self.action_callback_group,
         )
 
-        self.control_timer = self.create_timer(
-            1.0 / self.control_frequency,
-            self.update,
-        )
+        self.control_timer = self.create_timer(1.0/self.control_frequency, self.update)
 
+    
+    def update(self) -> None:
+        if self.mission is None:
+            return
+
+        # TODO: Topic verilerini isle ve motion_node'a komut gonder.
+        self.publish_mission_state()
+
+
+    def gnss_callback(self, msg: Gnss) -> None:
+        self.gnss = msg
+
+
+
+#region ACTION REGION
     def goal_callback(self, goal_request: Autonomous.Goal) -> GoalResponse:
         if not goal_request.mission_raw.strip():
             self.get_logger().warning("Empty autonomous mission rejected")
@@ -126,12 +147,6 @@ class AutoActNode(Node):
             with self.goal_lock:
                 self.goal_active = False
 
-    def update(self) -> None:
-        if self.mission is None:
-            return
-
-        # TODO: Topic verilerini isle ve motion_node'a komut gonder.
-        self.publish_mission_state()
 
     def publish_mission_state(self) -> None:
         mission = self.mission
@@ -143,6 +158,7 @@ class AutoActNode(Node):
         msg.mission_id = mission.cloud_id
         msg.completion_rate = mission.completion_rate
         self.mission_state_publisher.publish(msg)
+#endregion
 
     def destroy_node(self) -> bool:
         self.action_server.destroy()
