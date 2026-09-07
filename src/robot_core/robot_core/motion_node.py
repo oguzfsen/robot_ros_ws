@@ -21,11 +21,13 @@ from robot_interfaces.msg import (
 )
 from robot_core.Tools import RobotState, _get_param, clamp_int, map_value
 from robot_core.Ackermann import Ackermann
+import time
 
 class MotionNode(Node):
     def __init__(self):
         super().__init__("motion_node", automatically_declare_parameters_from_overrides=True)
 
+        self.watchdog_frequency = float(_get_param(self, "watchdog_frequency", 10.0))
         self.topic_relay = str(_get_param(self, "topic_relay", "/robot/relay"))
         self.topic_steer = str(_get_param(self, "topic_steer", "/robot/steer"))
         self.topic_hub_motor = str(_get_param(self, "topic_hub_motor", "/robot/hub_motor"))
@@ -40,9 +42,10 @@ class MotionNode(Node):
 
         self.avg_steering = 0
 
+
         self.ackermann = Ackermann(self.wheelbase, self.wheel_track, self.wheel_diameter)
 
-        self.subsribtion = self.create_subscription(Motion, self.topic_motion, self.motion_callback, 1)
+        self.subsribtion = self.create_subscription(Motion, self.topic_motion, self.motion_callback, 10)
         self.average_steering_subs = self.create_subscription(Float32, self.topic_average_steering, self.avg_steering_callback, 10)
         
         self.relay_publisher = self.create_publisher(RobotRelay, self.topic_relay, 10)
@@ -50,10 +53,25 @@ class MotionNode(Node):
         self.hubmotor_publisher = self.create_publisher(HubMotor, self.topic_hub_motor, 10)
         self.brake_publisher = self.create_publisher(Brake, self.topic_brake, 10)
 
+        self.command_timeout_sec = float(_get_param(self, "command_timeout_sec", 0.5))
+        self.last_command_time = time.monotonic()
+        self.watchdog_timer = self.create_timer(1.0 / self.watchdog_frequency, self.watchdog_callback)
+
+
+    def watchdog_callback(self) -> None:
+        """Force steering motors to stop if commands stop arriving."""
+
+        if (time.monotonic() - self.last_command_time) <= self.command_timeout_sec:
+            return
+
+        self.stop_everything()
+
+
     def motion_callback(self, msg: Motion) -> None:
         self.publish_relay(msg.arm, msg.reverse, msg.arm)
         self.publish_steer(msg.steering, msg.arm)
         self.publish_hubmotor(msg.throttle)
+        self.last_command_time = time.monotonic()
     
 
     def stop_everything(self) -> None:

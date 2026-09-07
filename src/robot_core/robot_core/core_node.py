@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+import json
+from pathlib import Path
+
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -16,6 +19,7 @@ from robot_interfaces.msg import (
 from robot_interfaces.srv import MissionGet
 from std_msgs.msg import Int32MultiArray, Float32, Int32
 from robot_core.Buzzer import Buzzer
+from robot_core.drive_log_writer import CompassGnssLogger
 from robot_core.Tools import RobotState, _get_param, clamp_int, map_value
 from robot_core.Mission import Mission
 
@@ -40,6 +44,19 @@ class CoreNode(Node):
         self.topic_motion = str(_get_param(self, "topic_motion", "/robot/motion"))
         self.topic_state = str(_get_param(self, "topic_state", "/robot/state"))
         self.action_autonomous = str(_get_param(self, "action_autonomous", "/robot/autonomous"))
+        self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
+        self.topic_compass = str(
+            _get_param(self, "topic_compass", "/robot/compass")
+        )
+        log_directory = Path(
+            str(
+                _get_param(
+                    self,
+                    "drive_log_directory",
+                    "~/.ros/robot_drive_logs",
+                )
+            )
+        ).expanduser()
         
         self.control_frequency = int(_get_param(self, "control_frequency", 10))
         buzzer_gpio = int(_get_param(self, "buzzer_pin", 18))
@@ -53,6 +70,7 @@ class CoreNode(Node):
         self.autonomous_cancel_requested = False
 
         self.robot_state = RobotState.IDLE
+        self.old_robot_state = RobotState.IDLE
         self.rc_ignition = False
         self.rc_reverse = False
         self.rc_steering = 0
@@ -64,6 +82,23 @@ class CoreNode(Node):
         
         self.gnss: Gnss | None = None
         self.compass: Compass | None = None
+        self.compass_gnss_logger = CompassGnssLogger(
+            log_directory,
+            self.get_logger(),
+        )
+
+        self.gnss_subs = self.create_subscription(
+            Gnss,
+            self.topic_gnss,
+            self.gnss_callback,
+            10,
+        )
+        self.compass_subs = self.create_subscription(
+            Compass,
+            self.topic_compass,
+            self.compass_callback,
+            10,
+        )
 
         self.compass_heading = 0.0
 
@@ -98,8 +133,32 @@ class CoreNode(Node):
             self.autonomous_control()
 
         self.publish_state()
+        self.update_manual_logging()
 
 
+    def update_manual_logging(self) -> None:
+        entered_manual = (
+            self.old_robot_state != RobotState.MANUAL
+            and self.robot_state == RobotState.MANUAL
+        )
+        left_manual = (
+            self.old_robot_state == RobotState.MANUAL
+            and self.robot_state != RobotState.MANUAL
+        )
+
+        if entered_manual:
+            self.compass_gnss_logger.start()
+        elif left_manual:
+            self.compass_gnss_logger.close()
+
+        self.old_robot_state = self.robot_state
+
+
+    def gnss_callback(self, msg: Gnss) -> None:
+        self.gnss = msg
+
+    def compass_callback(self, msg: Compass) -> None:
+        self.compass = msg
 
     def publish_state(self) -> None:
         msg = Int32()
@@ -115,6 +174,7 @@ class CoreNode(Node):
         msg.steering = self.rc_steering
         msg.reverse = self.rc_reverse
         self.motion_publisher.publish(msg)
+        self.compass_gnss_logger.log(self.compass, self.gnss)
 
 
     def emergency_stop(self) -> None:
@@ -191,7 +251,7 @@ class CoreNode(Node):
         payload = msg.payload
 
         if command_type == "start_mission":
-            mission_id = int(payload)
+            mission_id = int(json.loads(payload)["mission_id"])
             self.start_mission(mission_id)
         if command_type == "pause_mission":
             ...
@@ -351,6 +411,8 @@ class CoreNode(Node):
 
 
     def destroy_node(self) -> bool:
+        self.compass_gnss_logger.close()
+
         try:
             self.buzzer.shutdown()
         except Exception:
