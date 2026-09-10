@@ -101,12 +101,12 @@ def test_compass_gnss_logger_writes_sensor_fields(tmp_path, monkeypatch):
     )
 
     logger.start()
-    logger.log(compass, gnss)
+    logger.log(compass, gnss, average_steering=2.5)
     logger.close()
 
     path = tmp_path / "compass_log_2026-09-07_12-34-56.txt"
     assert path.read_text(encoding="utf-8").splitlines() == [
         "\t".join(drive_log_writer.COMPASS_GNSS_LOG_COLUMNS),
         "2026-09-07T12:34:56.000+00:00\t1.0\t2.0\t3.0\t45.0"
-        "\t47.0\t0.5\t1.25\t1",
+        "\t47.0\t0.5\t1.25\t1\t2.5",
     ]

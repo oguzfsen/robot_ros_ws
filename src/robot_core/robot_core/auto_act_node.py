@@ -11,80 +11,64 @@ from rclpy.node import Node
 
 from std_msgs.msg import Float32, Int32
 from robot_interfaces.action import Autonomous
-from robot_interfaces.msg import MissionState, Gnss, Compass
+from robot_interfaces.msg import MissionState, Gnss, Compass, Motion
 from robot_core.Mission import Mission
 from robot_core.Tools import _get_param, RobotState
 
 
 class AutoActNode(Node):
+
+    TO_START = "to_start"
+    TO_LINE = "to_line"
+    LINE_FOLLOW = "line_follow"
+    CLOSE_TO_WP = "close_to_wp"
+    MANEUVER = "maneuver"
+    TO_END = "to_end"
+
+
+
+
     def __init__(self) -> None:
         super().__init__(
             "auto_act_node",
             automatically_declare_parameters_from_overrides=True,
         )
 
-        self.control_frequency = float(
-            _get_param(self, "control_frequency", 10.0)
-        )
-
-        self.action_autonomous = str(
-            _get_param(self, "action_autonomous", "/robot/autonomous")
-        )
-        self.topic_mission_state = str(
-            _get_param(self, "topic_mission_state", "/robot/mission_state")
-        )
+        self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
+        self.action_autonomous = str(_get_param(self, "action_autonomous", "/robot/autonomous"))
+        self.topic_mission_state = str(_get_param(self, "topic_mission_state", "/robot/mission_state"))
         self.topic_gnss = str(_get_param(self, "topic_gnss", "/robot/gnss"))
-        self.topic_compass = str(
-            _get_param(self, "topic_compass", "/robot/compass")
-        )
-        self.topic_average_steering = str(
-            _get_param(
-                self,
-                "topic_average_steering",
-                "/robot/average_steering",
-            )
-        )
-        self.topic_state = str(_get_param(self, "topic_state", "/robot/state"))
+        self.topic_compass = str(_get_param(self, "topic_compass", "/robot/compass"))
+        self.topic_average_steering = str(_get_param(self, "topic_average_steering", "/robot/average_steering",))
+        
 
         self.mission: Mission | None = None
         self.goal_active = False
         self.shutdown_requested = False
         self.goal_lock = Lock()
 
-        self.gnss: Gnss | None = None
-        self.compass: Compass | None = None
         self.average_steering = 0.0
-        self.robot_state = RobotState.MISSION
+        self.sufficient_distance: float = 1.0
+        self.next_wp_distance: float = 999.0
 
-        self.mission_state_publisher = self.create_publisher(
-            MissionState,
-            self.topic_mission_state,
-            10,
-        )
-        self.gnss_subs = self.create_subscription(
-            Gnss,
-            self.topic_gnss,
-            self.gnss_callback,
-            10,
-        )
-        self.compass_subs = self.create_subscription(
-            Compass,
-            self.topic_compass,
-            self.compass_callback,
-            10,
-        )
-        self.av_steer_subs = self.create_subscription(
-            Float32,
-            self.topic_average_steering,
-            self.av_steer_callback,
-            10,
-        )
-        self.state_subs = self.create_subscription(
-            Int32,
-            self.topic_state,
-            self.state_callback,
-            10,
-        )
+        self.last_gnss_time = self.get_clock().now()
+        self.latitude: float | None = None
+        self.longitude: float | None = None
+        self.accuracy: float | None = None
+        self.fix_ok: bool = False
+        self.speed: float | None = None
+        self.speed_accuracy: float | None = None
+        self.gnss_heading : float | None = None
+        self.gnss_heading_accuracy : float | None = None
+        self.last_compass = self.get_clock().now()
+        self.compass_heading: float | None = None
+
+
+        self.gnss_subs = self.create_subscription(Gnss, self.topic_gnss, self.gnss_callback, 10)
+        self.compass_subs = self.create_subscription(Compass, self.topic_compass, self.compass_callback, 10)
+        self.av_steer_subs = self.create_subscription(Float32, self.topic_average_steering, self.av_steer_callback, 10)
+        self.mission_state_publisher = self.create_publisher(MissionState, self.topic_mission_state, 10)
+        self.motion_publisher = self.create_publisher(Motion, self.topic_motion, 10)
 
         self.action_callback_group = ReentrantCallbackGroup()
         self.action_server = ActionServer(
@@ -97,28 +81,83 @@ class AutoActNode(Node):
             callback_group=self.action_callback_group,
         )
 
-        self.control_timer = self.create_timer(
-            1.0 / self.control_frequency,
-            self.update,
-        )
+        self.control_timer = self.create_timer(1.0 / self.control_frequency, self.update,)
+
+        self.phase = self.TO_START
+
+
 
     def update(self) -> None:
         if self.mission is None:
             return
 
+        # eldeki veri: mission, gnss, compass, av_steering, state
+        # üretilecek veri motion
+        # fazlar: 
+        #   TO_START => self.mission.get_previous_waypoint() == None ; görev yeni başladı. move_to_point(mission)
+        self.sufficient_distance: float = 1.0
+        self.current_target = self.mission.get_current_target()
+        self.previous_waypoint = self.mission.get_previous_waypoint()
+        self.current_line = self.create_line(self.previous_waypoint, self.current_target)
+
+        self.next_wp_distance = self.mission.distance_to_target(self.latitude, self.longitude, self.mission.index)
+
+        self.decide_phase()
+
+        if self.phase == self.TO_START:
+            self.move_to_point()
+
+        self.publish_motion() # TODO doldur
         self.publish_mission_state()
 
+    def decide_phase(self):
+        
+        if self.phase == self.TO_START:
+            if self.mission.advance_if_target_reached(self.latitude, self.longitude):
+                self.phase = self.LINE_FOLLOW
+            
+
+        if self.phase == self.LINE_FOLLOW:
+            if self.far_from_line():
+                self.phase == self.TO_LINE
+
+            if self.mission.advance_if_target_reached(self.latitude, self.longitude):
+                self.phase == self.LINE_FOLLOW
+
+        
+
+
+
+    
+
+
+
+# region Subscriptions
+
     def gnss_callback(self, msg: Gnss) -> None:
-        self.gnss = msg
+        self.last_gnss_time = msg.header.stamp
+        self.latitude = msg.latitude
+        self.longitude = msg.longitude
+        self.accuracy = msg.accuracy_m
+        self.fix_ok = msg.fix_ok
+        self.speed = msg.ground_speed_m_s
+        self.speed_accuracy = msg.speed_accuracy_m_s
+        self.gnss_heading = msg.heading_deg
+        self.gnss_heading_accuracy = msg.heading_accuracy_deg
+
 
     def compass_callback(self, msg: Compass) -> None:
-        self.compass = msg
+        self.last_compass = msg.header.stamp
+        self.compass_heading = msg.heading_deg
+
 
     def av_steer_callback(self, msg: Float32) -> None:
         self.average_steering = float(msg.data)
+        
 
-    def state_callback(self, msg: Int32) -> None:
-        self.robot_state = RobotState(int(msg.data))
+# endregion
+
+# region ACTION STUFF
 
     def goal_callback(self, goal_request: Autonomous.Goal) -> GoalResponse:
         if not goal_request.mission_raw.strip():
@@ -190,6 +229,8 @@ class AutoActNode(Node):
             self.mission = None
             with self.goal_lock:
                 self.goal_active = False
+
+# endregion
 
     def publish_mission_state(self) -> None:
         mission = self.mission

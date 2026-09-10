@@ -40,6 +40,21 @@ class CompassNode(Node):
         self.use_mux = bool(_get_param(self, "use_mux", False))
         self.topic_compass = str(_get_param(self, "topic_compass", "/robot/compass"))
         self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
+        self.calibration_x_offset = float(
+            _get_param(self, "calibration_x_offset", 0.0)
+        )
+        self.calibration_y_offset = float(
+            _get_param(self, "calibration_y_offset", 0.0)
+        )
+        self.calibration_x_scale = float(
+            _get_param(self, "calibration_x_scale", 1.0)
+        )
+        self.calibration_y_scale = float(
+            _get_param(self, "calibration_y_scale", 1.0)
+        )
+        self.heading_offset_deg = float(
+            _get_param(self, "heading_offset_deg", 0.0)
+        )
         self.mux_address = 0
         self.mux_channel = 0
 
@@ -132,11 +147,16 @@ class CompassNode(Node):
             z = self.to_int16(data[2], data[3])
             y = self.to_int16(data[4], data[5])
 
-            heading_rad = math.atan2(y, x)
-            heading_deg = math.degrees(heading_rad)
-
-            if heading_deg < 0:
-                heading_deg += 360.0
+            calibrated_x = (
+                x - self.calibration_x_offset
+            ) * self.calibration_x_scale
+            calibrated_y = (
+                y - self.calibration_y_offset
+            ) * self.calibration_y_scale
+            heading_rad = math.atan2(calibrated_y, calibrated_x)
+            heading_deg = (
+                math.degrees(heading_rad) + self.heading_offset_deg
+            ) % 360.0
 
             msg = Compass()
             msg.header.stamp = self.get_clock().now().to_msg()

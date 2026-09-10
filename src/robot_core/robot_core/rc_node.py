@@ -28,6 +28,7 @@ class RCNode(Node):
         self.control_frequency = float(_get_param(self, "control_frequency", 10.0))
         self.topic_rc_input = str(_get_param(self, "topic_rc_input", "/rc/input"))
         self.last_msg = None
+        self.serial_rx_buffer = bytearray()
         
         self.publisher = self.create_publisher(RcInput, self.topic_rc_input, 10)
         self.read_timer = self.create_timer(1.0 / self.control_frequency, self.read_serial)
@@ -46,6 +47,7 @@ class RCNode(Node):
                 self.serial_baud,
                 timeout=self.serial_timeout,
             )
+            self.serial_rx_buffer.clear()
         except Exception as exc:
             self.serial = None
             self.get_logger().error(
@@ -65,7 +67,7 @@ class RCNode(Node):
             return
 
         try:
-            raw = self.serial.readline()
+            raw = self.serial.read_all()
         except Exception as exc:
             self.get_logger().error(f"RC serial read error: {exc}")
             try:
@@ -79,7 +81,14 @@ class RCNode(Node):
         if not raw:
             return
 
-        line = raw.decode(errors="ignore").strip()
+        self.serial_rx_buffer.extend(raw)
+        lines = self.serial_rx_buffer.split(b"\n")
+        self.serial_rx_buffer = bytearray(lines.pop())
+
+        line = ""
+        while lines and not line:
+            line = lines.pop().decode(errors="ignore").strip()
+
         if not line:
             return
 

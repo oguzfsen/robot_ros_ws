@@ -17,6 +17,9 @@ COMPASS_GNSS_LOG_COLUMNS = (
     "gnss_heading_accuracy_deg",
     "gnss_ground_speed_m_s",
     "gnss_fix_ok",
+    "average_steering",
+    "rc_reverse",
+    "rc_throttle"
 )
 
 
@@ -152,7 +155,7 @@ class CompassGnssLogger:
         self._missing_data_warning_sent = False
         self._logger.info(f"Compass/GNSS logging started. file={path}")
 
-    def log(self, compass, gnss) -> None:
+    def log(self, compass, gnss, average_steering: float, rc_reverse: bool, rc_throttle: int) -> None:
         if not self._writer.is_open:
             return
 
@@ -180,6 +183,9 @@ class CompassGnssLogger:
                     ),
                     "gnss_ground_speed_m_s": float(gnss.ground_speed_m_s),
                     "gnss_fix_ok": int(gnss.fix_ok),
+                    "average_steering": float(average_steering),
+                    "rc_reverse": bool(rc_reverse),
+                    "rc_throttle": int(rc_throttle)
                 }
             )
         except (OSError, ValueError) as exc:

@@ -129,6 +129,12 @@ compass_node:
     device_name: compass
     device_address: 30
     use_mux: false
+    # compass_log_2026-09-10_11-53-45: robust X/Y ellipse calibration
+    calibration_x_offset: -83.5
+    calibration_y_offset: -203.0
+    calibration_x_scale: 0.0032102728731942215
+    calibration_y_scale: 0.0036231884057971015
+    heading_offset_deg: 9.522356069311135
 
 hubmotor_node:
   ros__parameters:

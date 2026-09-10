@@ -48,6 +48,13 @@ class CoreNode(Node):
         self.topic_compass = str(
             _get_param(self, "topic_compass", "/robot/compass")
         )
+        self.topic_average_steering = str(
+            _get_param(
+                self,
+                "topic_average_steering",
+                "/robot/average_steering",
+            )
+        )
         log_directory = Path(
             str(
                 _get_param(
@@ -99,6 +106,12 @@ class CoreNode(Node):
             self.compass_callback,
             10,
         )
+        self.average_steering_subs = self.create_subscription(
+            Float32,
+            self.topic_average_steering,
+            self.average_steering_callback,
+            10,
+        )
 
         self.compass_heading = 0.0
 
@@ -133,7 +146,7 @@ class CoreNode(Node):
             self.autonomous_control()
 
         self.publish_state()
-        self.update_manual_logging()
+        # self.update_manual_logging()
 
 
     def update_manual_logging(self) -> None:
@@ -160,6 +173,9 @@ class CoreNode(Node):
     def compass_callback(self, msg: Compass) -> None:
         self.compass = msg
 
+    def average_steering_callback(self, msg: Float32) -> None:
+        self.avg_steering = float(msg.data)
+
     def publish_state(self) -> None:
         msg = Int32()
         msg.data = int(self.robot_state)
@@ -174,7 +190,13 @@ class CoreNode(Node):
         msg.steering = self.rc_steering
         msg.reverse = self.rc_reverse
         self.motion_publisher.publish(msg)
-        self.compass_gnss_logger.log(self.compass, self.gnss)
+        # self.compass_gnss_logger.log(
+        #     self.compass,
+        #     self.gnss,
+        #     self.avg_steering,
+        #     self.rc_reverse,
+        #     self.rc_throttle
+        # )
 
 
     def emergency_stop(self) -> None:
