@@ -9,7 +9,7 @@
     speed_limit: 1.5
     steer_input_deadband: 5
     steer_input_max: 100
-    steer_max: 60  #-100,100 => -60,60 arasına maplanıyor.
+    steer_max: 45  #-100,100 => -45,45 arasına maplanıyor.
     throttle_deadband: 5
     throttle_input_max: 100
     throttle_max: 60  #0,100 => 0,60 arasına maplanıyor.

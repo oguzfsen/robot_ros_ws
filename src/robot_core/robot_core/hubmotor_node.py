@@ -135,27 +135,33 @@ class HubMotorNode(Node):
             self.start_next_i2c_write()
             return
 
-        if self.is_too_fast():
-            self.set_motor_power("front_left", 0)
-            self.set_motor_power("front_right", 0)
-            self.set_motor_power("rear_left", 0)
-            self.set_motor_power("rear_right", 0)
-        else:
-            self.set_motor_power("front_left", int(msg.front_left))
-            self.set_motor_power("front_right", int(msg.front_right))
-            self.set_motor_power("rear_left", int(msg.rear_left))
-            self.set_motor_power("rear_right", int(msg.rear_right))
+        sf = self.speed_factor()
+        self.set_motor_power("front_left", int(msg.front_left * sf))
+        self.set_motor_power("front_right", int(msg.front_right * sf))
+        self.set_motor_power("rear_left", int(msg.rear_left * sf))
+        self.set_motor_power("rear_right", int(msg.rear_right * sf))
 
         self.start_next_i2c_write()
 
-    def is_too_fast(self) -> bool:
-        if self.gnss is None:
-            return False
 
-        return (
-            self.gnss.speed_accuracy_m_s < 0.3
-            and self.gnss.ground_speed_m_s > self.speed_limit
-        )
+    def speed_factor(self) -> float:
+        if self.gnss is None:
+            return 1.0
+
+        if self.gnss.speed_accuracy_m_s >= 0.3:
+            return 1.0
+
+        speed = self.gnss.ground_speed_m_s
+        lower_limit = self.speed_limit * (2.0 / 3.0)
+
+        if speed <= lower_limit:
+            return 1.0
+
+        if speed >= self.speed_limit:
+            return 0.0
+
+        return (self.speed_limit - speed) / (self.speed_limit - lower_limit)
+        
 
     def control_callback(self) -> None:
         """Process pending DAC writes in the timer loop."""

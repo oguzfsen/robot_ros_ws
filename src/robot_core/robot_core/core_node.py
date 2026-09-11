@@ -34,7 +34,7 @@ class CoreNode(Node):
         self.throttle_max = int(_get_param(self, "throttle_max", 60))
         self.steer_input_deadband = int(_get_param(self, "steer_input_deadband", 5))
         self.steer_input_max = int(_get_param(self, "steer_input_max", 100)) # (-100 ile +100 arası)
-        self.steer_max = int(_get_param(self, "steer_max", 60))
+        self.steer_max = int(_get_param(self, "steer_max", 45))
 
         self.topic_rc_input = str(_get_param(self, "topic_rc_input", "/rc/input"))
         self.topic_command = str(_get_param(self, "topic_command", "/user/command"))        
