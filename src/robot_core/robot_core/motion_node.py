@@ -8,7 +8,7 @@ motion/movement nodes
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32MultiArray, Float32
+from std_msgs.msg import Int32MultiArray, Float32, Int32
 from robot_interfaces.msg import (
     RcInput,
     HubMotor,
@@ -41,6 +41,12 @@ class MotionNode(Node):
         self.throttle_deadband = int(_get_param(self, "throttle_deadband", 5))
 
         self.avg_steering = 0
+        self.rc_connected = False
+        self.rc_armed = False
+        self.autonomous_blocked = True
+        self.robot_state = RobotState.IDLE
+        self.rc_subscription = self.create_subscription(RcInput, str(_get_param(self, "topic_rc_input", "/rc/input")), self.rc_callback, 10)
+        self.state_subscription = self.create_subscription(Int32, str(_get_param(self, "topic_state", "/robot/state")), self.state_callback, 10)
 
 
         self.ackermann = Ackermann(self.wheelbase, self.wheel_track, self.wheel_diameter)
@@ -67,10 +73,28 @@ class MotionNode(Node):
         self.stop_everything()
 
 
+    def rc_callback(self, msg: RcInput) -> None:
+        self.rc_connected = bool(msg.connected)
+        self.rc_armed = msg.connected and msg.ignition == 1
+        if not self.rc_connected or self.rc_armed:
+            if not self.autonomous_blocked:
+                self.stop_everything()
+            self.autonomous_blocked = True
+
+    def state_callback(self, msg: Int32) -> None:
+        if msg.data == int(RobotState.MISSION) and self.robot_state != RobotState.MISSION:
+            self.autonomous_blocked = not self.rc_connected or self.rc_armed
+        self.robot_state = RobotState(msg.data)
+
     def motion_callback(self, msg: Motion) -> None:
+        if msg.autonomous:
+            if self.autonomous_blocked or self.robot_state != RobotState.MISSION:
+                return
+        elif self.robot_state == RobotState.MISSION and not self.autonomous_blocked:
+            return
         self.publish_relay(msg.arm, msg.reverse, msg.arm)
-        self.publish_steer(msg.steering, msg.arm)
-        self.publish_hubmotor(msg.throttle)
+        self.publish_steer(msg.steering, msg.arm, msg.stop_steering)
+        self.publish_hubmotor(msg.throttle, msg.coast and msg.arm)
         self.last_command_time = time.monotonic()
     
 
@@ -91,19 +115,19 @@ class MotionNode(Node):
         self.relay_publisher.publish(relay_msg)
 
 
-    def publish_steer(self, steer: int, arm: bool) -> None:
+    def publish_steer(self, steer: int, arm: bool, stop_steering: bool = False) -> None:
         steer_msg = Steer()
         steer_msg.header.stamp = self.get_clock().now().to_msg()
         steer_msg.front_left = steer
         steer_msg.front_right = steer
         steer_msg.rear_left = -steer
         steer_msg.rear_right = -steer
-        steer_msg.stop_all = False if arm else True
+        steer_msg.stop_all = not arm or stop_steering
 
         self.steer_publisher.publish(steer_msg)
 
 
-    def publish_hubmotor(self, throttle: int) -> None:
+    def publish_hubmotor(self, throttle: int, coast: bool = False) -> None:
         throttle1, throttle2, throttle3, throttle4 = self.ackermann.get_fixed(throttle, self.avg_steering)
 
         hubmotor_msg = HubMotor()
@@ -115,7 +139,7 @@ class MotionNode(Node):
 
         self.hubmotor_publisher.publish(hubmotor_msg)
 
-        if throttle < self.throttle_deadband:
+        if throttle < self.throttle_deadband and not coast:
             self.brake = True
         else:
             self.brake = False

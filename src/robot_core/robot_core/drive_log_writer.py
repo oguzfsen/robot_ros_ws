@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import csv
+import time
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -23,8 +24,21 @@ COMPASS_GNSS_LOG_COLUMNS = (
 )
 
 
+AUTONOMOUS_LOG_COLUMNS = (
+    "timestamp", "elapsed_s", "event", "error", "mission_id", "phase", "waypoint_index", "waypoint_count", "completion_rate",
+    "latitude", "longitude", "gnss_accuracy_m", "gnss_fix_ok", "gnss_speed_accuracy_m_s",
+    "compass_heading_deg", "gnss_heading_deg", "gnss_body_heading_deg", "navigation_heading_deg", "heading_correction_deg", "gnss_heading_accuracy_deg", "sensor_heading_difference_deg",
+    "previous_latitude", "previous_longitude", "target_latitude", "target_longitude", "next_latitude", "next_longitude",
+    "target_distance_m", "aim_east_m", "aim_north_m", "heading_error_deg", "cross_track_error_m",
+    "speed_m_s", "target_speed_m_s", "acceleration_m_s2", "predicted_speed_m_s",
+    "average_steering_deg", "rc_connected", "rc_armed", "control_revoked", "arm", "coast", "stop_steering", "brake_elapsed_s", "throttle", "steering_deg", "reverse",
+    "reverse_count", "maneuver_reverse", "maneuver_stopping", "maneuver_distance_m", "launching", "launch_elapsed_s", "cruise_throttle",
+    "stuck_duration_s", "mission_has_moved", "recovery_phase", "recovery_reverse", "recovery_distance_m",
+)
+
+
 class DriveLogWriter:
-    """Thread-safe, tab-separated log writer for robot drive tests."""
+    """Thread-safe CSV log writer for robot drive tests."""
 
     def __init__(
         self,
@@ -71,7 +85,7 @@ class DriveLogWriter:
             writer = csv.DictWriter(
                 stream,
                 fieldnames=self.columns,
-                delimiter="\t",
+                delimiter=",",
                 lineterminator="\n",
                 extrasaction="raise",
             )
@@ -115,7 +129,7 @@ class DriveLogWriter:
         for sequence in range(1000):
             suffix = "" if sequence == 0 else f"_{sequence:02d}"
             path = self.log_directory / (
-                f"{self.file_prefix}_{timestamp}{suffix}.txt"
+                f"{self.file_prefix}_{timestamp}{suffix}.csv"
             )
             try:
                 stream = path.open(
@@ -204,3 +218,50 @@ class CompassGnssLogger:
             return
 
         self._logger.info(f"Compass/GNSS log closed. file={path}")
+
+
+class AutonomousLogger:
+    """Her goreve ayri CSV: bos hucre bilinmeyen veri, elapsed_s gorev suresidir.
+
+    waypoint_index sifirdan baslar; tamamlaninca waypoint_count olur.
+    canceled iptal, error hata, completed basari, shutdown node kapanisidir.
+    """
+
+    def __init__(self, log_directory, logger):
+        self._logger = logger
+        self._writer = DriveLogWriter(AUTONOMOUS_LOG_COLUMNS, log_directory, "autonomous_log")
+        self._start_time = 0.0
+
+    def start(self, mission_id):
+        self.close()
+        self._writer.file_prefix = f"autonomous_log_{mission_id}"
+        try:
+            path = self._writer.start()
+        except (OSError, RuntimeError) as exc:
+            self._logger.error(f"Autonomous log start failed: {exc}")
+            return
+        self._start_time = time.monotonic()
+        self._logger.info(f"Autonomous logging started. file={path}")
+
+    def log(self, values):
+        if not self._writer.is_open:
+            return
+        row = dict(values)
+        row["timestamp"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        row["elapsed_s"] = round(time.monotonic() - self._start_time, 3)
+        try:
+            self._writer.write(row)
+        except (OSError, ValueError) as exc:
+            self._logger.error(f"Autonomous log write failed: {exc}")
+            self.close()
+
+    def close(self):
+        if not self._writer.is_open:
+            return
+        path = self._writer.path
+        try:
+            self._writer.close()
+        except OSError as exc:
+            self._logger.error(f"Autonomous log close failed: {exc}")
+            return
+        self._logger.info(f"Autonomous log closed. file={path}")

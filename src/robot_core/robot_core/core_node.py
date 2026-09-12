@@ -78,6 +78,7 @@ class CoreNode(Node):
 
         self.robot_state = RobotState.IDLE
         self.old_robot_state = RobotState.IDLE
+        self.rc_connected = False
         self.rc_ignition = False
         self.rc_reverse = False
         self.rc_steering = 0
@@ -142,9 +143,8 @@ class CoreNode(Node):
             self.emergency_stop()
         elif self.robot_state == RobotState.MANUAL:
             self.manual_control()
-        elif self.robot_state == RobotState.MISSION:
-            self.autonomous_control()
 
+        # MISSION modunda Motion komutlarini auto_act_node yayinlar.
         self.publish_state()
         # self.update_manual_logging()
 
@@ -216,11 +216,17 @@ class CoreNode(Node):
         belirtir. MISSION otonom, MANUAL kumandayla kontrol modudur.
         """
         previous_ignition = self.rc_ignition
+        self.rc_connected = bool(msg.connected)
 
         # Bağlantı kaybında yalnızca RC ile ilişkili çalışma modlarından çık.
         if not msg.connected:
+            self.rc_ignition = False
+            self.rc_throttle = 0
+            self.cancel_autonomous_action()
             if self.robot_state in (RobotState.MANUAL, RobotState.MISSION):
                 self.robot_state = RobotState.IDLE
+            self.emergency_stop()
+            self.publish_state()
             return
 
         # RC bağlıyken güncel kumanda değerlerini al.
@@ -239,6 +245,15 @@ class CoreNode(Node):
             if not previous_ignition and self.rc_ignition:
                 self.robot_state = RobotState.MANUAL
 
+        if self.rc_ignition:
+            if self.autonomous_task_active and not self.autonomous_cancel_requested:
+                self.get_logger().info("RC arm: otonom gorev iptal ediliyor, kontrol kumandada")
+            self.cancel_autonomous_action()
+        if self.robot_state == RobotState.MANUAL:
+            self.manual_control()
+        elif self.robot_state == RobotState.IDLE:
+            self.emergency_stop()
+        self.publish_state()
 
     def fix_rc_values(self, throttle:int, steering:int):
         if throttle <= self.throttle_deadband:
@@ -262,6 +277,8 @@ class CoreNode(Node):
 
 
     def emergency_callback(self, msg:Emergency) -> None:
+        if getattr(msg, "node_name", "") == "auto_act_node" and (self.autonomous_cancel_requested or self.robot_state == RobotState.MANUAL):
+            return  # Iptal edilen gorevin gecikmis hatasi manuel kontrolu geri alamaz.
         if msg.emergency:
             self.robot_state = RobotState.EMERGENCY
             self.cancel_autonomous_action()
@@ -294,6 +311,9 @@ class CoreNode(Node):
 
 
     def start_mission(self, mission_id: int) -> None:
+        if not self.rc_connected or self.rc_ignition:
+            self.get_logger().error("Gorev icin RC bagli ve arm kapali olmali")
+            return
         if self.robot_state != RobotState.IDLE or self.autonomous_task_active:
             self.get_logger().error("Robot beklemede değilken görev başlatılamaz!")
             return
@@ -309,7 +329,7 @@ class CoreNode(Node):
 
 
     def _mission_received(self, future) -> None:
-        if self.robot_state != RobotState.IDLE:
+        if self.robot_state != RobotState.IDLE or not self.rc_connected or self.rc_ignition or self.autonomous_cancel_requested:
             self.get_logger().warning("Robot artık beklemede değil, görev başlatılmadı")
             self._clear_autonomous_action()
             return
@@ -362,6 +382,8 @@ class CoreNode(Node):
         )
 
     def start_autonomous_action(self, mission_raw: str) -> bool:
+        if not self.rc_connected or self.rc_ignition or self.autonomous_cancel_requested:
+            return False
         if not self.autonomous_action_client.server_is_ready():
             self.get_logger().error("Autonomous action server hazır değil")
             return False
