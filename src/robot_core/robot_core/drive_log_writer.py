@@ -32,7 +32,9 @@ AUTONOMOUS_LOG_COLUMNS = (
     "target_distance_m", "aim_east_m", "aim_north_m", "heading_error_deg", "cross_track_error_m",
     "speed_m_s", "target_speed_m_s", "acceleration_m_s2", "predicted_speed_m_s",
     "average_steering_deg", "rc_connected", "rc_armed", "control_revoked", "arm", "coast", "stop_steering", "brake_elapsed_s", "throttle", "steering_deg", "reverse",
-    "reverse_count", "maneuver_reverse", "maneuver_stopping", "maneuver_distance_m", "launching", "launch_elapsed_s", "cruise_throttle",
+    "pivot", "pivot_stage", "pivot_heading_deg", "turn_rate_deg_s", "pivot_throttle",
+    "steering_front_left_deg", "steering_front_right_deg", "steering_rear_left_deg", "steering_rear_right_deg",
+    "launching", "launch_elapsed_s", "cruise_throttle",
     "stuck_duration_s", "mission_has_moved", "recovery_phase", "recovery_reverse", "recovery_distance_m",
 )
 

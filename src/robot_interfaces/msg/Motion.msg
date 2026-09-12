@@ -9,3 +9,5 @@ bool stop_steering
 bool coast
 # Komutun kaynagi; RC devraldiginda otonom komutlar uygulanmaz.
 bool autonomous
+# 0: normal surus, -1: eksenel sola (CCW), +1: eksenel saga (CW).
+int8 pivot

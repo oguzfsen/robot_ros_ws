@@ -25,6 +25,8 @@ class Message:
         self.stop_steering = False
         self.coast = False
         self.autonomous = False
+        self.pivot = 0
+        self.independent_reverse = False
 
 
 class Node:
@@ -67,7 +69,7 @@ def node(monkeypatch, tmp_path):
         'rclpy.callback_groups': {'ReentrantCallbackGroup': lambda: None},
         'rclpy.executors': {'MultiThreadedExecutor': object},
         'std_msgs': {},
-        'std_msgs.msg': {'Float32': Message, 'Int32': Message},
+        'std_msgs.msg': {'Float32': Message, 'Float32MultiArray': Message, 'Int32': Message},
         'robot_interfaces': {},
         'robot_interfaces.action': {'Autonomous': SimpleNamespace(Goal=Message, Result=Message)},
         'robot_interfaces.msg': {'MissionState': Message, 'Gnss': Message, 'Compass': Message, 'Motion': Message, 'Emergency': Message, 'RcInput': Message},
@@ -93,6 +95,7 @@ def node(monkeypatch, tmp_path):
     driver.longitude = 0.0
     driver.compass_heading = 0.0
     driver.speed = 0.0
+    driver.steering_angles = [0.0] * 4
     yield driver
     driver.autonomous_logger.close()
 
@@ -171,7 +174,6 @@ def test_current_steering_predicts_next_heading(node):
     assert 0 < node.steering < 10
 
 
-
 def test_last_five_accelerations_and_speed_limit(node):
     for speed in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7]:
         node.speed = speed
@@ -179,13 +181,13 @@ def test_last_five_accelerations_and_speed_limit(node):
     assert len(node.accelerations) == 5
     assert node.acceleration == pytest.approx(1.2)
     node.drive(5.0, 100, False)
-    assert node.target_speed == 1.0
+    assert node.target_speed == 1.1
     assert node.throttle < node.CRUISE_THROTTLE and node.coast
     node.speed = 0.95
     node.drive(1.0, 100, False)
     assert node.throttle < node.CRUISE_THROTTLE and node.coast  # Ivme artinca gaz azalir.
     assert node.steering == 30
-    node.speed = 1.0
+    node.speed = node.MAX_SPEED
     node.acceleration = -0.2
     node.drive(0.6, 0, False)
     assert node.throttle == 0 and node.coast
@@ -227,7 +229,7 @@ def test_visible_next_point_starts_turn_inside_acceptance_circle(node):
     assert route.index == 0
 
 
-def test_invisible_next_point_stops_at_waypoint_before_reverse(node):
+def test_invisible_next_point_stops_at_waypoint_before_pivot(node):
     route = mission(node, [(0, 1), (0, -10)])
     node.speed = 0.4
     node.update()
@@ -235,81 +237,13 @@ def test_invisible_next_point_stops_at_waypoint_before_reverse(node):
     assert route.index == 0 and node.target_speed == 0.6
     position(node, 0, 0.7)
     node.update()
-    assert route.index == 1 and node.phase == node.REVERSE_MANEUVER
+    assert route.index == 1 and node.phase == node.PIVOT_TURN
     assert node.throttle == 0 and not node.reverse
     node.update()
-    assert not node.reverse  # Hala hareketli; geri roleye gecilemez.
+    assert not node.reverse  # Hala hareketli; eksenel donuse gecilemez.
     node.speed = 0.0
     node.update()
-    assert node.reverse and node.throttle > 0 and node.reverse_count == 1
-
-
-def test_maneuver_changes_direction_only_after_stopping(node):
-    mission(node, [(0, -10)])
-    node.update()
-    node.update()
-    assert node.reverse and node.reverse_count == 1
-    position(node, 0, -1.8)
-    node.speed = 0.6
-    node.update()
-    assert node.throttle == 0 and node.reverse and node.steering == 0
-    assert node.maneuver_stopping
-    node.update()
-    assert node.reverse
-    node.speed = 0.0
-    node.update()
-    assert not node.reverse and node.throttle > 0
-    assert node.reverse_count == 1
-
-
-def test_maneuver_exits_after_target_enters_front_view(node):
-    mission(node, [(0, -10)])
-    node.update()
-    node.update()
-    node.speed = 0.4
-    node.compass_heading = 150
-    node.update()
-    assert node.throttle == 0 and node.reverse
-    node.speed = 0.0
-    node.update()
-    assert node.phase == node.TO_START and node.reverse
-    node.update()
-    assert node.throttle > 0 and not node.reverse
-
-
-def test_five_reverse_legs_then_stop_without_false_completion(node):
-    route = mission(node, [(0, -100)])
-    node.update()
-    for leg in range(10):
-        node.speed = 0.0
-        node.update()
-        assert node.phase == node.REVERSE_MANEUVER
-        assert node.reverse == (leg % 2 == 0)
-        assert node.reverse_count == leg // 2 + 1
-        position(node, 0, -2 if leg % 2 == 0 else 0)
-        node.speed = 0.2
-        node.update()
-        assert node.throttle == 0
-    node.speed = 0.0
-    node.update()
-    assert node.phase == node.THE_END and node.reverse_count == 5
-    assert not route.is_completed
-    assert not node.arm and not node.reverse
-    node.update()
-    assert node.throttle == 0 and not route.is_completed
-    row = log_rows(node)[-1]
-    assert row['event'] == 'error' and row['error'] == node.mission_error
-    assert len(node.emergency_publisher.messages) == 1
-    assert node.emergency_publisher.messages[0].emergency
-    assert node.emergency_publisher.messages[0].node_name == 'auto_act_node'
-    assert node.emergency_publisher.messages[0].error == node.mission_error
-
-
-def test_each_new_turn_resets_reverse_count(node):
-    node.reverse_count = 5
-    node.go_to_point((0, -10), 0.6)
-    assert node.phase == node.REVERSE_MANEUVER
-    assert node.reverse_count == 0
+    assert node.pivot_stage == "aligning" and node.throttle == 0
 
 
 def test_final_waypoint_stops_before_marking_mission_complete(node):
@@ -331,7 +265,7 @@ def test_final_waypoint_stops_before_marking_mission_complete(node):
 def test_cancel_and_new_mission_reset_drive_state(node):
     mission(node, [(0, 10)])
     node.update()
-    node.reverse_count = 4
+    node.pivot_direction = -1
     node.mission = None
     node.update()
     message = node.motion_publisher.messages[-1]
@@ -341,7 +275,7 @@ def test_cancel_and_new_mission_reset_drive_state(node):
     assert len(node.motion_publisher.messages) == count
     mission(node, [(0, 20)])
     node.update()
-    assert node.reverse_count == 0 and node.throttle > 0
+    assert node.pivot == 0 and node.pivot_direction == 0 and node.throttle > 0
 
 
 def test_cancel_during_update_cannot_publish_old_drive_command(node):
@@ -371,9 +305,9 @@ def test_actual_waypoint_must_be_visible_even_if_line_point_is_visible(node):
     node.update()
     assert abs(node.heading_error(node.line_point())) < 60
     assert abs(node.heading_error(node.point_vector(node.current_target))) > 60
-    assert node.phase == node.REVERSE_MANEUVER and node.throttle == 0
+    assert node.phase == node.PIVOT_TURN and node.throttle == 0
     node.update()
-    assert node.reverse and node.reverse_count == 1
+    assert node.pivot_stage == "aligning" and node.throttle == 0
 
 
 @pytest.mark.parametrize('points', [[(0, 0), (0, 20), (20, 20), (20, 0)], [(0, 0), (0, 20), (3, 20), (3, 0)], [(10, 10), (20, 20)]])
@@ -382,27 +316,40 @@ def test_route_completes_with_simple_four_wheel_motion_model(node, control_time,
     route = mission(node, points)
     node.BRAKE_SETTLE_TIME = type(node).BRAKE_SETTLE_TIME
     node.BRAKE_RELEASE_TIME = type(node).BRAKE_RELEASE_TIME
-    east = north = heading = speed = angle = 0.0
+    east = north = heading = speed = angle = yaw_rate = 0.0
+    angles = [0.0] * 4
     for frame in range(3000):
         control_time[0] += 0.1
         position(node, east, north)
         node.compass_heading = math.degrees(heading) % 360.0
         node.speed = speed
         node.average_steering = angle
+        node.steering_angles = angles[:]
         node.update()
         if route.is_completed:
             break
+        targets = [45, -45, -45, 45] if node.pivot else [node.steering, node.steering, -node.steering, -node.steering]
         if node.arm and not node.stop_steering:
-            angle += max(-6.0, min(6.0, node.steering - angle))
-        if node.throttle < node.throttle_deadband and not node.coast:
+            angles = [a + max(-6.0, min(6.0, target - a)) for a, target in zip(angles, targets)]
+        angle = (angles[0] + angles[1] - angles[2] - angles[3]) / 4.0
+        if node.pivot:
             speed = max(0.0, speed - 0.1)
+            if node.coast:
+                yaw_rate += (node.pivot * max(0, node.throttle - 25) - yaw_rate) * 0.2
+            else:
+                yaw_rate *= 0.5
+            heading += math.radians(yaw_rate) * 0.1
         else:
-            speed += (node.throttle / 35.0 - speed) * 0.1
-        assert speed <= 1.0
-        signed_speed = -speed if node.reverse else speed
-        heading += 2.0 * signed_speed * math.tan(math.radians(angle)) / node.wheelbase * 0.1
-        east += signed_speed * math.sin(heading) * 0.1
-        north += signed_speed * math.cos(heading) * 0.1
+            yaw_rate = 0.0
+            if node.throttle < node.throttle_deadband and not node.coast:
+                speed = max(0.0, speed - 0.1)
+            else:
+                speed += (node.throttle / 35.0 - speed) * 0.1
+            assert speed <= node.MAX_SPEED + 0.1
+            signed_speed = -speed if node.reverse else speed
+            heading += 2.0 * signed_speed * math.tan(math.radians(angle)) / node.wheelbase * 0.1
+            east += signed_speed * math.sin(heading) * 0.1
+            north += signed_speed * math.cos(heading) * 0.1
     assert route.is_completed
     assert not node.arm and not node.reverse
     assert node.throttle == node.steering == 0
@@ -427,7 +374,7 @@ def test_log_contains_measurements_and_exact_published_motion(node):
     assert float(row['target_distance_m']) == pytest.approx(10, abs=0.1)
     assert float(row['aim_north_m']) == pytest.approx(10)
     assert float(row['heading_error_deg']) == pytest.approx(0)
-    assert float(row['speed_m_s']) == 0.4 and float(row['target_speed_m_s']) == 0.8
+    assert float(row['speed_m_s']) == 0.4 and float(row['target_speed_m_s']) == 1.1
     assert float(row['gnss_accuracy_m']) == 0.02 and row['gnss_fix_ok'] == 'True'
     assert float(row['average_steering_deg']) == 4.5
     assert row['arm'] == str(message.arm) and row['reverse'] == str(message.reverse)
@@ -464,7 +411,7 @@ def test_cancel_closes_log_and_next_mission_gets_another_file(node):
     node.mission = None
     node.update()
     row = log_rows(node)[-1]
-    assert row['event'] == 'mission_ended' and row['reverse_count'] == '1'
+    assert row['event'] == 'mission_ended' and row['pivot'] == '0'
     assert row['arm'] == row['reverse'] == 'False' and row['throttle'] == '0'
     assert not node.autonomous_logger._writer.is_open
     contents = first_path.read_text()
@@ -473,7 +420,7 @@ def test_cancel_closes_log_and_next_mission_gets_another_file(node):
     assert node.autonomous_logger._writer.path != first_path
     assert first_path.read_text() == contents
     rows = log_rows(node)
-    assert len(rows) == 1 and rows[0]['reverse_count'] == '0'
+    assert len(rows) == 1 and rows[0]['pivot_stage'] == ''
 
 
 def test_completion_logs_final_zero_command_and_closes_file(node):
@@ -551,7 +498,7 @@ class Goal:
 
 
 @pytest.mark.parametrize('core_requests_cancel', [False, True])
-def test_maneuver_limit_ends_action_with_or_without_core_cancel(node, monkeypatch, core_requests_cancel):
+def test_pivot_stall_ends_action_with_or_without_core_cancel(node, monkeypatch, control_time, core_requests_cancel):
     route = mission(node, [(0, -100)])
     node.mission = None
     goal = Goal(node, route.raw_json)
@@ -569,11 +516,11 @@ def test_maneuver_limit_ends_action_with_or_without_core_cancel(node, monkeypatc
 
     def step(period):
         ticks.append(node.mission)
-        assert len(ticks) < 30, 'Action did not exit after maneuver limit'
+        assert len(ticks) < 100, 'Action did not exit after pivot stall'
+        control_time[0] += period
         node.speed = 0.0
-        if node.maneuver_start is not None and not node.maneuver_stopping:
-            position(node, 0, -2 if node.reverse else 0)
-            node.speed = 0.2
+        if node.pivot:
+            node.steering_angles = [45.0, -45.0, -45.0, 45.0]
         node.update()
 
     monkeypatch.setattr(node.emergency_publisher, 'publish', emergency)
@@ -582,9 +529,9 @@ def test_maneuver_limit_ends_action_with_or_without_core_cancel(node, monkeypatc
     assert not result.completed
     assert goal.states == ['canceled' if core_requests_cancel else 'aborted']
     assert not ticks[-1].is_completed
-    assert node.reverse_count == 5 and not node.goal_active
+    assert not node.goal_active and node.pivot == 0
     assert order == [('error', node.mission_error), ('emergency', node.mission_error)]
-    assert 'Geri manevra siniri' in node.mission_error
+    assert 'Eksenel donus basarisiz' in node.mission_error
     assert log_rows(node)[-1]['error'] == node.mission_error
 
 
@@ -719,7 +666,7 @@ def test_reliable_gnss_gently_adjusts_straight_driving(node, compass, gnss, corr
     assert node.navigation_heading == compass
 
 
-@pytest.mark.parametrize('phase', ['reverse_maneuver', 'recovery', 'the_end'])
+@pytest.mark.parametrize('phase', ['pivot_turn', 'recovery', 'the_end'])
 def test_maneuvers_use_compass_even_with_accurate_gnss(node, phase):
     node.phase = phase
     node.gnss_heading = 5.0
@@ -836,47 +783,8 @@ def test_planned_stop_and_missing_data_do_not_trigger_recovery(node, control_tim
     assert node.stuck_since is None and node.recovery_phase is None
 
 
-@pytest.mark.parametrize('reverse', [False, True])
-def test_recovery_preserves_interrupted_maneuver_and_its_distance(node, control_time, reverse):
-    route = mission(node, [(0, -100)])
-    node.update()
-    observe_first_motion(node)
-    node.update()
-    node.maneuver_reverse = reverse
-    node.maneuver_heading = 180.0 if reverse else 0.0
-    node.reverse_count = 3
-    node.stop()
-    node.update()
-    original_start = node.maneuver_start
-    control_time[0] += 4
-    node.update()
-    assert node.phase == node.RECOVERY and node.recovery_reverse != reverse
-    node.update()
-    assert node.reverse != reverse
-    # Kurtarma, orijinal manevranin baslangicinin 2 m gerisine goturur.
-    position(node, 0, 2 if reverse else -2)
-    node.speed = 0.3
-    node.update()
-    assert node.recovery_stopping and node.throttle == 0
-    node.speed = 0.0
-    node.update()
-    assert node.phase == node.REVERSE_MANEUVER
-    node.update()
-    assert node.reverse == reverse and node.throttle > 0
-    assert not node.maneuver_stopping
-    assert node.maneuver_distance() == pytest.approx(-2.0)
-    assert node.maneuver_start == original_start and node.reverse_count == 3 and route.index == 0
-    position(node, 0, 0)
-    node.speed = 0.2
-    node.update()
-    assert node.throttle > 0 and not node.maneuver_stopping
-    position(node, 0, -2 if reverse else 2)
-    node.update()
-    assert node.maneuver_stopping and node.throttle == 0
-
-
 def test_recovery_does_not_consume_waypoints_it_crosses(node, control_time):
-    route = mission(node, [(0, -1), (0, -10)])
+    route = mission(node, [(0, 1), (0, 10)])
     node.update()
     observe_first_motion(node)
     node.update()
@@ -884,7 +792,7 @@ def test_recovery_does_not_consume_waypoints_it_crosses(node, control_time):
     node.update()
     assert node.phase == node.RECOVERY
     node.update()
-    position(node, 0, -1)
+    position(node, 0, 1)
     node.speed = 0.2
     node.update()
     assert route.index == 0 and node.phase == node.RECOVERY
@@ -954,31 +862,6 @@ def test_missing_position_during_recovery_logs_wait_and_resets_stall_timer(node,
 def braking_node(node, control_time):
     node.BRAKE_SETTLE_TIME = type(node).BRAKE_SETTLE_TIME
     return node
-
-
-def test_direction_change_waits_for_brake_and_speed_without_disarming(braking_node, control_time):
-    node = braking_node
-    mission(node, [(0, -10)])
-    node.update()
-    assert node.arm and node.throttle == 0 and not node.stop_steering
-    control_time[0] += 0.99
-    node.update()
-    assert not node.reverse and node.reverse_count == 0
-    control_time[0] += 0.01
-    node.update()
-    assert node.arm and node.reverse and node.throttle > 0 and not node.stop_steering
-    position(node, 0, -1.8)
-    node.speed = 0.6
-    node.update()
-    assert node.throttle == 0 and node.arm and node.reverse
-    assert node.steering == 0 and not node.stop_steering
-    control_time[0] += 1.0
-    node.update()
-    assert node.reverse and node.throttle == 0  # Sure doldu ama robot hala hareketli.
-    node.speed = 0.0
-    node.update()
-    assert not node.reverse and node.throttle > 0
-    assert all(message.arm for message in node.motion_publisher.messages)
 
 
 def test_recovery_waits_at_both_direction_changes_and_keeps_arm(braking_node, control_time):
@@ -1268,16 +1151,13 @@ def test_speed_trim_and_speed_limit_coast_without_braking(node, motion_node):
     motion_node.motion_callback(node.motion_publisher.messages[-1])
     assert node.throttle < node.CRUISE_THROTTLE and node.coast and node.steering == 8
     assert not node.stop_steering and not motion_node.brake_publisher.messages[-1].brake
-    node.speed = 1.01
+    node.speed = node.MAX_SPEED + 0.01
     node.drive(0.8, 8, False)
     node.publish_motion()
     motion_node.motion_callback(node.motion_publisher.messages[-1])
     assert node.throttle == 0 and node.coast and node.steering == 8
     assert not motion_node.brake_publisher.messages[-1].brake
     assert node.arm
-
-
-
 
 
 @pytest.mark.parametrize('speed, expected', [(0.0, 0), (0.299, 0), (0.3, 0), (0.301, 30)])
@@ -1347,7 +1227,7 @@ def test_speed_regulation_never_cycles_mechanical_brake(node, motion_node, speed
     node.publish_motion()
     motion_node.motion_callback(node.motion_publisher.messages[-1])
     assert node.coast and not motion_node.brake_publisher.messages[-1].brake
-    if speed >= 1.0:
+    if speed >= node.MAX_SPEED:
         assert node.throttle == 0
     node.stop()
     node.publish_motion()

@@ -107,26 +107,25 @@ class RelayNode(Node):
         Args:
             msg: RobotRelay message containing relay states.
         """
-        changed = (
-            self.last_ignition != msg.ignition or
-            self.last_reverse != msg.reverse or
-            self.last_brake != msg.brake or
-            self.last_back_energy != msg.back_energy or
-            self.last_alarm_lamp != msg.alarm_lamp
-        )
-
-        if not changed:
+        reverse = (msg.reverse,) * 4
+        if msg.independent_reverse:
+            reverse = (msg.reverse_front_left, msg.reverse_front_right, msg.reverse_rear_left, msg.reverse_rear_right)
+        # Bekleyen I2C yazisi varken eski duruma donus de yeni bir hedeftir.
+        # Son uygulanana bakip erken donmek RC devralma komutunu kaybedebilir.
+        idle = self.pending_write_future is None and self.active_write_state is None
+        if idle and (self.last_ignition, self.last_reverse, self.last_brake, self.last_back_energy, self.last_alarm_lamp) == (msg.ignition, reverse, msg.brake, msg.back_energy, msg.alarm_lamp):
             return
 
         try:
             self.desired_ignition = msg.ignition
-            self.desired_reverse = msg.reverse
+            self.desired_reverse = reverse
             self.desired_brake = msg.brake
             self.desired_back_energy = msg.back_energy
             self.desired_alarm_lamp = msg.alarm_lamp
 
             self.set_pin_group([self.ignition_pin], msg.ignition)
-            self.set_pin_group(self.reverse_pins, msg.reverse)
+            for index, pin in enumerate(self.reverse_pins):
+                self.set_pin_group([pin], reverse[index])
             self.set_pin_group([self.brake_pin], msg.brake)
             self.set_pin_group([self.back_energy_pin], msg.back_energy)
             self.set_pin_group([self.alarm_lamp_pin], msg.alarm_lamp)
@@ -359,6 +358,9 @@ class RelayNode(Node):
         self.active_write_state = None
         self.active_write_data_a = None
         self.active_write_data_b = None
+
+        # DATA_A yazilmis, DATA_B basarisiz olmus olabilir; eski durum artik kesin degil.
+        self.last_reverse = None
 
         self.get_logger().error(f"Relay update failed: {ex}")
 

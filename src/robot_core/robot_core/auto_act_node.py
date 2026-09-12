@@ -10,7 +10,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Float32MultiArray
 from robot_interfaces.action import Autonomous
 from robot_interfaces.msg import MissionState, Gnss, Compass, Motion, Emergency, RcInput
 from robot_core.Mission import Mission
@@ -23,21 +23,24 @@ class AutoActNode(Node):
     TO_START = "to_start"
     ON_LINE = "on_line"
     CLOSE_TO_POINT = "close_to_point"
-    REVERSE_MANEUVER = "reverse_maneuver"
+    PIVOT_TURN = "pivot_turn"
     RECOVERY = "recovery"
     THE_END = "the_end"
 
     # Mesafeler metre, hizlar m/s, acilar derece. Surus ayarlari burada.
-    MAX_SPEED = 1.0
-    CRUISE_SPEED = 0.8  # 1 m/s sinirina ulasmadan gazla duzeltme payi.
+    MAX_SPEED = 1.1
+    CRUISE_SPEED = 1.1
     CLOSE_SPEED = 0.6
     REACHED_DISTANCE = 0.5
     CLOSE_DISTANCE = 2.0
     LOOKAHEAD_DISTANCE = 3.0
     FRONT_ANGLE = 60.0
     MAX_STEERING = 30.0
-    MANEUVER_DISTANCE = 2.0
-    MAX_REVERSE_COUNT = 5
+    PIVOT_SPEED = 12.0  # Pusuladan olculen hedef donus hizi, derece/s.
+    PIVOT_TOLERANCE = 5.0
+    PIVOT_STOPPED_SPEED = 2.0  # Derece/s.
+    PIVOT_THROTTLE_MAX = 60.0
+    PIVOT_SPEED_GAIN = 1.0
     STUCK_TIME = 4.0
     RECOVERY_DISTANCE = 2.0
     GNSS_HEADING_ACCURACY = 10.0
@@ -87,6 +90,7 @@ class AutoActNode(Node):
         self.driving_mission = None
 
         self.average_steering = 0.0
+        self.steering_angles = None
         self.last_gnss_time = self.get_clock().now()
         self.latitude = None
         self.longitude = None
@@ -103,6 +107,7 @@ class AutoActNode(Node):
         self.rc_subs = self.create_subscription(RcInput, str(_get_param(self, "topic_rc_input", "/rc/input")), self.rc_callback, 10)
         self.gnss_subs = self.create_subscription(Gnss, self.topic_gnss, self.gnss_callback, 10)
         self.compass_subs = self.create_subscription(Compass, self.topic_compass, self.compass_callback, 10)
+        self.steering_angles_subs = self.create_subscription(Float32MultiArray, str(_get_param(self, "topic_steering_angles", "/robot/steering_angles")), self.steering_angles_callback, 10)
         self.av_steer_subs = self.create_subscription(Float32, self.topic_average_steering, self.av_steer_callback, 10)
         self.mission_state_publisher = self.create_publisher(MissionState, self.topic_mission_state, 10)
         self.motion_publisher = self.create_publisher(Motion, self.topic_motion, 10)
@@ -133,12 +138,15 @@ class AutoActNode(Node):
         self.launching = False
         self.launch_since = None
         self.cruise_throttle = float(self.CRUISE_THROTTLE)
-        self.reverse_count = 0
-        self.maneuver_start = None
-        self.maneuver_reverse = True
-        self.maneuver_stopping = True
-        self.maneuver_turn = 1
-        self.maneuver_heading = 0.0
+        self.pivot = 0
+        self.pivot_stage = ""
+        self.pivot_direction = 0
+        self.pivot_heading = None
+        self.pivot_started = None
+        self.pivot_throttle = 0.0
+        self.last_turn_heading = None
+        self.turn_rates = []
+        self.turn_rate = 0.0
         self.stuck_since = None
         self.mission_has_moved = False
         self.recovery_phase = None
@@ -205,13 +213,14 @@ class AutoActNode(Node):
             return
 
         self.update_acceleration()
+        self.update_turn_rate()
         self.next_wp_distance = mission.distance_to_target(self.latitude, self.longitude)
         self.update_heading()
 
         if mission.is_completed:
             self.phase = self.THE_END
 
-        if self.phase != self.REVERSE_MANEUVER and self.phase != self.RECOVERY and self.phase != self.THE_END:
+        if self.phase != self.PIVOT_TURN and self.phase != self.RECOVERY and self.phase != self.THE_END:
             self.advance_waypoint()
             if self.phase != self.THE_END:
                 self.decide_phase()
@@ -222,8 +231,8 @@ class AutoActNode(Node):
             self.follow_line()
         elif self.phase == self.CLOSE_TO_POINT:
             self.approach_point()
-        elif self.phase == self.REVERSE_MANEUVER:
-            self.go_reverse()
+        elif self.phase == self.PIVOT_TURN:
+            self.turn_in_place()
         elif self.phase == self.RECOVERY:
             self.recover()
         elif self.phase == self.THE_END:
@@ -276,11 +285,11 @@ class AutoActNode(Node):
                 self.aim_point = self.point_vector(self.current_target)
         self.aim_heading_error = error
         if abs(error) > self.FRONT_ANGLE:
-            self.phase = self.REVERSE_MANEUVER
-            self.reverse_count = 0
-            self.maneuver_start = None
-            self.maneuver_reverse = True
-            self.maneuver_stopping = True
+            self.phase = self.PIVOT_TURN
+            self.pivot_stage = "stopping"
+            # Anten donuste merkez etrafinda yer degistirir; hedef yonu sabit tut.
+            self.pivot_heading = math.degrees(math.atan2(self.aim_point[0], self.aim_point[1])) % 360.0
+            self.pivot_direction = 1 if error > 0.0 else -1
             self.stop()
             return
 
@@ -342,62 +351,95 @@ class AutoActNode(Node):
             return point
         return turn_point
 
-    def maneuver_error(self):
-        """Manevradan sonra izlenecek noktanin gorus alanina girisini kontrol eder."""
-        self.aim_point = self.point_vector(self.current_target)
-        error = self.heading_error(self.aim_point)
-        if abs(error) <= self.FRONT_ANGLE:
-            if self.next_wp_distance <= self.CLOSE_DISTANCE:
-                self.aim_point = self.close_point()
-            else:
-                self.aim_point = self.line_point()
-        self.aim_heading_error = self.heading_error(self.aim_point)
-        return self.aim_heading_error
+    def update_turn_rate(self):
+        """GNSS yerine pusulanin son bes frame'deki donus hizini kullanir."""
+        if self.last_turn_heading is not None:
+            change = (self.compass_heading - self.last_turn_heading + 180.0) % 360.0 - 180.0
+            self.turn_rates.append(change * self.control_frequency)
+            self.turn_rates = self.turn_rates[-5:]
+            self.turn_rate = sum(self.turn_rates) / len(self.turn_rates)
+        self.last_turn_heading = self.compass_heading
 
-    def go_reverse(self):
-        """Dur, en fazla 2 m geri git, dur, gerekirse 2 m ileri git."""
-        error = self.maneuver_error()
-        if self.maneuver_stopping:
-            self.stop()
-            if not self.stop_complete():
-                return
-            if abs(error) <= self.FRONT_ANGLE:
-                self.decide_phase()
-                return
-            if self.maneuver_start is not None:
-                self.maneuver_reverse = not self.maneuver_reverse
-            if self.maneuver_reverse and self.reverse_count >= self.MAX_REVERSE_COUNT:
-                self.fail_mission(f"Geri manevra siniri doldu: {self.reverse_count} geri manevraya ragmen hedef gorus alanina alinamadi")
-                return
-            self.maneuver_start = (self.latitude, self.longitude)
-            self.maneuver_heading = self.compass_heading + (180.0 if self.maneuver_reverse else 0.0)
-            self.maneuver_turn = 1 if error >= 0.0 else -1
-            self.maneuver_stopping = False
-            if self.maneuver_reverse:
-                self.reverse_count += 1
+    def wheels_ready(self, pivot=False):
+        """X duzeninde ortalama aci sifirdir; dort teker ayri kontrol edilir."""
+        if self.steering_angles is None:
+            return False
+        targets = [45.0, -45.0, -45.0, 45.0] if pivot else [0.0, 0.0, 0.0, 0.0]
+        return all(abs(angle - target) <= self.CENTERED_STEERING for angle, target in zip(self.steering_angles, targets))
 
-        moved = self.maneuver_distance()
-        if abs(error) <= self.FRONT_ANGLE or moved + self.speed * self.PREDICTION_TIME >= self.MANEUVER_DISTANCE:
-            self.maneuver_stopping = True
+    def turn_in_place(self):
+        """Dur, tekerleri X yap, pusulayla don, frenle ve tekerleri merkezle."""
+        error = (self.pivot_heading - self.compass_heading + 180.0) % 360.0 - 180.0
+        self.aim_heading_error = error
+        self.arm = True
+        now = time.monotonic()
+
+        if self.pivot_stage == "stopping":
             self.stop()
+            if self.stop_complete() and self.wheels_ready():
+                self.reverse = False
+                self.pivot_stage = "aligning"
             return
 
-        steering = self.maneuver_turn * self.MAX_STEERING
-        if self.maneuver_reverse:
-            steering = -steering
-        self.drive(self.CLOSE_SPEED, steering, self.maneuver_reverse)
+        if self.pivot_stage == "aligning":
+            self.stop()
+            self.pivot = self.pivot_direction
+            if self.wheels_ready(True):
+                self.pivot_stage = "turning"
+                self.pivot_started = now
+                self.pivot_throttle = float(self.CRUISE_THROTTLE)
+                self.coast = True
+            return
 
-    def maneuver_distance(self):
-        """Kurtarmayla baslangicin gerisine gidildiyse mesafe negatif sayilir."""
-        x, y = self.position_vector(self.maneuver_start[0], self.maneuver_start[1])
-        heading = math.radians(self.maneuver_heading)
-        moved = math.hypot(x, y)
-        if -x * math.sin(heading) - y * math.cos(heading) < 0.0:
-            moved = -moved
-        return moved
+        if self.pivot_stage == "turning":
+            self.pivot = self.pivot_direction
+            self.coast = True
+            rotation_speed = self.turn_rate * self.pivot_direction
+            stopping_angle = self.PIVOT_TOLERANCE + max(0.0, rotation_speed) * self.PREDICTION_TIME
+            if abs(error) <= stopping_angle or error * self.pivot_direction <= 0.0:
+                self.pivot_stage = "braking"
+                self.stop()
+                self.pivot = self.pivot_direction
+                return
+            if now - self.pivot_started < self.BRAKE_RELEASE_TIME:
+                self.throttle = 0
+                return
+            target_rate = min(self.PIVOT_SPEED, max(self.PIVOT_STOPPED_SPEED * 2.0, abs(error) / 2.0))
+            adjustment = self.PIVOT_SPEED_GAIN * (target_rate - rotation_speed) / self.control_frequency
+            adjustment = max(-2.0, min(self.THROTTLE_RISE_PER_SECOND / self.control_frequency, adjustment))
+            self.pivot_throttle = max(0.0, min(self.PIVOT_THROTTLE_MAX, self.pivot_throttle + adjustment))
+            self.throttle = int(round(self.pivot_throttle)) if rotation_speed < self.PIVOT_SPEED else 0
+            return
+
+        if self.pivot_stage == "braking":
+            self.stop()
+            self.pivot = self.pivot_direction  # Fren kapanirken tekerleri ve yon rolelerini tut.
+            if not self.stop_complete(False) or abs(self.turn_rate) > self.PIVOT_STOPPED_SPEED:
+                return
+            if abs(error) > self.PIVOT_TOLERANCE * 2.0:
+                self.pivot_direction = 1 if error > 0.0 else -1
+                self.pivot_stage = "aligning"
+            else:
+                self.pivot_stage = "centering"
+            return
+
+        if self.pivot_stage == "centering":
+            self.stop()
+            if self.stop_complete() and self.wheels_ready():
+                self.pivot_stage = ""
+                self.decide_phase()
 
     def check_stuck(self):
         """Ilk hareketten sonra, gazla dort saniye kesintisiz durulursa kurtarir."""
+        if self.phase == self.PIVOT_TURN:
+            if self.pivot_stage != "turning" or self.throttle < self.throttle_deadband or not self.arm or abs(self.turn_rate) > self.PIVOT_STOPPED_SPEED:
+                self.stuck_since = None
+                return
+            if self.stuck_since is None:
+                self.stuck_since = time.monotonic()
+            if time.monotonic() - self.stuck_since >= self.STUCK_TIME:
+                self.fail_mission("Eksenel donus basarisiz: gaz verilmesine ragmen 4 saniye donus algilanamadi")
+            return
         if self.speed > self.STOPPED_SPEED:
             self.mission_has_moved = True
         if not self.mission_has_moved or self.throttle < self.throttle_deadband or not self.arm or self.speed > self.STOPPED_SPEED:
@@ -468,7 +510,7 @@ class AutoActNode(Node):
         steady = self.speed is not None and self.speed >= self.GNSS_ASSIST_SPEED and abs(self.acceleration) <= 0.2
         straight = abs(self.average_steering) <= self.GNSS_ASSIST_STEERING and abs(self.steering) <= self.GNSS_ASSIST_STEERING
         reliable = self.fix_ok and 0.0 <= self.gnss_heading_accuracy < self.GNSS_HEADING_ACCURACY and abs(difference) <= self.GNSS_ASSIST_DIFFERENCE
-        if not steady or not straight or not reliable or self.reverse or self.phase in (self.REVERSE_MANEUVER, self.RECOVERY, self.THE_END):
+        if not steady or not straight or not reliable or self.reverse or self.phase in (self.PIVOT_TURN, self.RECOVERY, self.THE_END):
             self.heading_correction = 0.0
             return
         correction = max(-self.MAX_HEADING_CORRECTION, min(self.MAX_HEADING_CORRECTION, difference * self.GNSS_ASSIST_WEIGHT))
@@ -480,7 +522,10 @@ class AutoActNode(Node):
         self.target_speed = max(0.0, min(self.MAX_SPEED, speed))
         self.reverse = reverse
         self.arm = True
-        if not self.driving and self.speed <= self.STEERING_START_SPEED and abs(self.average_steering) > self.CENTERED_STEERING:
+        centered = abs(self.average_steering) <= self.CENTERED_STEERING
+        if self.steering_angles is not None:
+            centered = centered and self.wheels_ready()
+        if not self.driving and self.speed <= self.STEERING_START_SPEED and not centered:
             self.stop()
             return
         self.throttle = self.speed_throttle()
@@ -521,6 +566,7 @@ class AutoActNode(Node):
 
     def stop(self):
         """Roleleri acik ve mevcut yonde tutar; throttle sifir komutu freni sikar."""
+        self.pivot = 0
         self.target_speed = 0.0
         self.throttle = 0
         self.coast = False
@@ -532,9 +578,12 @@ class AutoActNode(Node):
         if self.brake_since is None:
             self.brake_since = time.monotonic()
 
-    def stop_complete(self):
+    def stop_complete(self, check_steering=True):
         """Frenin kapanma suresi dolmadan veya robot durmadan yon degistirilmez."""
-        return self.speed is not None and self.speed <= self.STOPPED_SPEED and abs(self.average_steering) <= self.CENTERED_STEERING and self.brake_since is not None and time.monotonic() - self.brake_since >= self.BRAKE_SETTLE_TIME
+        centered = abs(self.average_steering) <= self.CENTERED_STEERING
+        if self.steering_angles is not None:
+            centered = self.wheels_ready()
+        return self.speed is not None and self.speed <= self.STOPPED_SPEED and (centered or not check_steering) and self.brake_since is not None and time.monotonic() - self.brake_since >= self.BRAKE_SETTLE_TIME
 
     def position_vector(self, latitude, longitude):
         """GNSS konumunu robota gore yerel metreye cevirir: x dogu, y kuzey."""
@@ -560,6 +609,7 @@ class AutoActNode(Node):
             self.steering = 0
             self.reverse = False
             self.coast = False
+            self.pivot = 0
         if self.throttle < self.throttle_deadband and not self.coast:
             if self.brake_since is None:
                 self.brake_since = time.monotonic()
@@ -579,6 +629,7 @@ class AutoActNode(Node):
         msg.stop_steering = self.stop_steering
         msg.coast = self.coast
         msg.autonomous = True
+        msg.pivot = self.pivot
         self.motion_publisher.publish(msg)
 
     def fail_mission(self, reason):
@@ -626,7 +677,6 @@ class AutoActNode(Node):
         if mission.index + 1 < mission.waypoint_count:
             next_point = mission.waypoints[mission.index + 1]
         cross_track_error = None
-        maneuver_distance = None
         if self.latitude is not None and self.longitude is not None:
             if previous is not None and target is not None:
                 start_x, start_y = self.point_vector(previous)
@@ -636,8 +686,6 @@ class AutoActNode(Node):
                 length = math.hypot(dx, dy)
                 if length > 0.001:
                     cross_track_error = (dy * start_x - dx * start_y) / length  # Pozitif: cizginin solu.
-            if self.phase == self.REVERSE_MANEUVER and self.maneuver_start is not None:
-                maneuver_distance = self.maneuver_distance()
 
         recovery_distance = None
         if self.phase == self.RECOVERY and self.recovery_start is not None and self.latitude is not None and self.longitude is not None:
@@ -690,10 +738,15 @@ class AutoActNode(Node):
             "throttle": self.throttle,
             "steering_deg": self.steering,
             "reverse": self.reverse,
-            "reverse_count": self.reverse_count,
-            "maneuver_reverse": self.maneuver_reverse if self.phase == self.REVERSE_MANEUVER else None,
-            "maneuver_stopping": self.maneuver_stopping if self.phase == self.REVERSE_MANEUVER else None,
-            "maneuver_distance_m": maneuver_distance,
+            "pivot": self.pivot,
+            "pivot_stage": self.pivot_stage,
+            "pivot_heading_deg": self.pivot_heading if self.phase == self.PIVOT_TURN else None,
+            "turn_rate_deg_s": self.turn_rate,
+            "pivot_throttle": self.pivot_throttle if self.phase == self.PIVOT_TURN else None,
+            "steering_front_left_deg": self.steering_angles[0] if self.steering_angles is not None else None,
+            "steering_front_right_deg": self.steering_angles[1] if self.steering_angles is not None else None,
+            "steering_rear_left_deg": self.steering_angles[2] if self.steering_angles is not None else None,
+            "steering_rear_right_deg": self.steering_angles[3] if self.steering_angles is not None else None,
             "launching": self.launching,
             "launch_elapsed_s": time.monotonic() - self.launch_since if self.launch_since is not None else None,
             "cruise_throttle": self.cruise_throttle,
@@ -734,6 +787,10 @@ class AutoActNode(Node):
         self.last_compass = msg.header.stamp
         self.compass_heading = msg.heading_deg
 
+
+    def steering_angles_callback(self, msg):
+        if len(msg.data) == 4:
+            self.steering_angles = list(msg.data)
 
     def av_steer_callback(self, msg: Float32) -> None:
         self.average_steering = float(msg.data)

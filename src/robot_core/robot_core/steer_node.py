@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int32MultiArray
+from std_msgs.msg import Float32, Float32MultiArray, Int32MultiArray
 
 from robot_interfaces.msg import Steer, Malfunction, Emergency
 from robot_interfaces.srv import I2COperation, EncoderZeroGet
@@ -32,6 +32,8 @@ class SteerNode(Node):
         )
         self.encoder_malfunction_timeout = float(_get_param(self, "encoder_malfunction_timeout", 5.0))
  
+        self.pivot_max_steer_angle_deg = float(_get_param(self, "pivot_max_steer_angle_deg", 45.0))
+        self.pivot_active = False
         self.max_steer_angle_deg = float(_get_param(self, "max_steer_angle_deg", 30.0))
         self.steer_angle_safety_margin_deg = float(
             _get_param(self, "steer_angle_safety_margin_deg", 5.0)
@@ -112,6 +114,7 @@ class SteerNode(Node):
         self.current_angles = [0, 0, 0, 0]
         self.enc_subs = self.create_subscription(Int32MultiArray, self.topic_encoder, self.encoder_callback, 10)
         self.steer_subs = self.create_subscription(Steer, self.topic_steer, self.steer_callback, 10)
+        self.steering_angles_publisher = self.create_publisher(Float32MultiArray, str(_get_param(self, "topic_steering_angles", "/robot/steering_angles")), 10)
         self.average_steering_publisher = self.create_publisher(Float32, self.topic_average_steering, 10)
         self.malfunction_publisher = self.create_publisher(Malfunction, self.topic_malfunction, 10)
 
@@ -224,6 +227,9 @@ class SteerNode(Node):
             self.start_next_i2c_write()
             return
         
+        # 45 dereceden merkeze donerken normal 35 derece korumasina takilma.
+        self.pivot_active = msg.pivot or (self.pivot_active and any(abs(angle) > self.max_steer_angle_deg for angle in self.current_angles))
+        target_limit = self.pivot_max_steer_angle_deg if msg.pivot else self.max_steer_angle_deg
         received_angles = [
             msg.front_left,
             msg.front_right,
@@ -234,10 +240,10 @@ class SteerNode(Node):
         for motor_index in range(4):
             target_angle = received_angles[motor_index]
 
-            if target_angle > self.max_steer_angle_deg:
-                target_angle = self.max_steer_angle_deg
-            elif target_angle < -self.max_steer_angle_deg:
-                target_angle = -self.max_steer_angle_deg
+            if target_angle > target_limit:
+                target_angle = target_limit
+            elif target_angle < -target_limit:
+                target_angle = -target_limit
 
             self.target_angles[motor_index] = target_angle
 
@@ -268,6 +274,9 @@ class SteerNode(Node):
                 max(-90.0, min(90.0, average_angle))
             )
             self.average_steering_publisher.publish(average_steering)
+            angles = Float32MultiArray()
+            angles.data = [float(angle) for angle in self.current_angles]
+            self.steering_angles_publisher.publish(angles)
 
         if self.malfunction_active:
             self.reset_all_motor_response_checks()
@@ -319,10 +328,8 @@ class SteerNode(Node):
 
     def steer_to_angle(self, motor_id: int, target_deg: int) -> None:
         current_deg = self.current_angles[motor_id - 1]
-        angle_limit_deg = (
-            self.max_steer_angle_deg
-            + self.steer_angle_safety_margin_deg
-        )
+        max_angle = self.pivot_max_steer_angle_deg if self.pivot_active else self.max_steer_angle_deg
+        angle_limit_deg = max_angle + self.steer_angle_safety_margin_deg
 
         if abs(current_deg) > angle_limit_deg:
             self.trigger_malfunction(
@@ -332,9 +339,9 @@ class SteerNode(Node):
             )
             return
 
-        if not (-self.max_steer_angle_deg <= target_deg <= self.max_steer_angle_deg):
+        if not (-max_angle <= target_deg <= max_angle):
             self.get_logger().warn(
-                f"Motor {motor_id}: target {target_deg}° out of safe range [-{self.max_steer_angle_deg}, {self.max_steer_angle_deg}], skipping"
+                f"Motor {motor_id}: target {target_deg}° out of safe range [-{max_angle}, {max_angle}], skipping"
             )
             return
 

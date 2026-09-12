@@ -92,9 +92,10 @@ class MotionNode(Node):
                 return
         elif self.robot_state == RobotState.MISSION and not self.autonomous_blocked:
             return
-        self.publish_relay(msg.arm, msg.reverse, msg.arm)
-        self.publish_steer(msg.steering, msg.arm, msg.stop_steering)
-        self.publish_hubmotor(msg.throttle, msg.coast and msg.arm)
+        pivot = msg.pivot if msg.arm and not msg.stop_steering else 0
+        self.publish_relay(msg.arm, msg.reverse, msg.arm, pivot)
+        self.publish_steer(msg.steering, msg.arm, msg.stop_steering, pivot)
+        self.publish_hubmotor(msg.throttle if msg.arm else 0, msg.coast and msg.arm, pivot)
         self.last_command_time = time.monotonic()
     
 
@@ -104,31 +105,46 @@ class MotionNode(Node):
         self.publish_hubmotor(0)
 
 
-    def publish_relay(self, ignition: bool, reverse: bool, back_energy: bool) -> None:
+    def publish_relay(self, ignition: bool, reverse: bool, back_energy: bool, pivot: int = 0) -> None:
         relay_msg = RobotRelay()
         relay_msg.header.stamp = self.get_clock().now().to_msg()
         relay_msg.ignition = ignition
         relay_msg.reverse = reverse
+        relay_msg.independent_reverse = pivot != 0
+        relay_msg.reverse_front_left = pivot < 0
+        relay_msg.reverse_front_right = pivot > 0
+        relay_msg.reverse_rear_left = pivot < 0
+        relay_msg.reverse_rear_right = pivot > 0
         relay_msg.back_energy = back_energy
         relay_msg.brake = False
         relay_msg.alarm_lamp = ignition
         self.relay_publisher.publish(relay_msg)
 
 
-    def publish_steer(self, steer: int, arm: bool, stop_steering: bool = False) -> None:
+    def publish_steer(self, steer: int, arm: bool, stop_steering: bool = False, pivot: int = 0) -> None:
         steer_msg = Steer()
         steer_msg.header.stamp = self.get_clock().now().to_msg()
         steer_msg.front_left = steer
         steer_msg.front_right = steer
         steer_msg.rear_left = -steer
         steer_msg.rear_right = -steer
+        steer_msg.pivot = pivot != 0
+        if pivot:
+            # Tekerlekler 1=on sol, 2=on sag, 3=arka sol, 4=arka sag.
+            steer_msg.front_left = 45
+            steer_msg.front_right = -45
+            steer_msg.rear_left = -45
+            steer_msg.rear_right = 45
         steer_msg.stop_all = not arm or stop_steering
 
         self.steer_publisher.publish(steer_msg)
 
 
-    def publish_hubmotor(self, throttle: int, coast: bool = False) -> None:
-        throttle1, throttle2, throttle3, throttle4 = self.ackermann.get_fixed(throttle, self.avg_steering)
+    def publish_hubmotor(self, throttle: int, coast: bool = False, pivot: int = 0) -> None:
+        if pivot:
+            throttle1 = throttle2 = throttle3 = throttle4 = throttle
+        else:
+            throttle1, throttle2, throttle3, throttle4 = self.ackermann.get_fixed(throttle, self.avg_steering)
 
         hubmotor_msg = HubMotor()
         hubmotor_msg.header.stamp = self.get_clock().now().to_msg()        
