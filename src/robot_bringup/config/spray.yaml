@@ -1,0 +1,5 @@
+/**:
+  ros__parameters:
+    bum_lenght: 2.1
+    nozzle_count: 13
+    nozzle_interval: 0.175

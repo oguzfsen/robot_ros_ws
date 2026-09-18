@@ -125,7 +125,7 @@ def test_pivot_brakes_with_x_wheels_then_centers_before_forward_launch(node, con
     assert node.pivot == 0 and not node.reverse and node.throttle > 0 and node.steering == 0
 
 
-def test_pivot_overshoot_changes_direction_only_after_braking(node, control_time):
+def test_pivot_overshoot_does_not_start_opposite_correction(node, control_time):
     begin_turn(node)
     node.BRAKE_SETTLE_TIME = 1.0
     node.compass_heading = 110.0
@@ -135,11 +135,19 @@ def test_pivot_overshoot_changes_direction_only_after_braking(node, control_time
         control_time[0] += 0.1
         node.update()
         assert node.throttle == 0
-        if node.pivot_direction == -1:
+        if node.pivot_stage == 'centering':
             break
-    assert node.pivot_direction == -1 and node.pivot == 1 and node.turn_rate == 0
+    assert node.pivot_stage == 'centering' and node.pivot_direction == 1 and node.pivot == 1
     node.update()
-    assert node.pivot == -1 and node.throttle == 0
+    assert node.pivot == 0 and node.throttle == 0
+    node.steering_angles = [0, 0, 0, 0]
+    node.update()
+    assert node.phase == node.TO_START
+    node.update()
+    assert node.pivot == 0 and node.throttle > 0 and node.steering == 0
+    node.speed = 0.4
+    node.update()
+    assert node.pivot == 0 and node.throttle > 0 and node.steering < 0
 
 
 @pytest.mark.parametrize('how', ['cancel', 'rc', 'emergency'])

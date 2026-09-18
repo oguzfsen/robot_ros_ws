@@ -416,11 +416,10 @@ class AutoActNode(Node):
             self.pivot = self.pivot_direction  # Fren kapanirken tekerleri ve yon rolelerini tut.
             if not self.stop_complete(False) or abs(self.turn_rate) > self.PIVOT_STOPPED_SPEED:
                 return
-            if abs(error) > self.PIVOT_TOLERANCE * 2.0:
-                self.pivot_direction = 1 if error > 0.0 else -1
-                self.pivot_stage = "aligning"
-            else:
-                self.pivot_stage = "centering"
+            # Dusuk hizda bile fren kapanana kadar yaklasik 30 derece donuyor. Kalan
+            # hatayi ters eksenel donusle kovalamak sag-sol dongusu olusturur.
+            # Tekerleri merkezle; 60 derece icindeki hatayi normal 4WS surus toplar.
+            self.pivot_stage = "centering"
             return
 
         if self.pivot_stage == "centering":
